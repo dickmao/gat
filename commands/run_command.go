@@ -157,6 +157,20 @@ func RunCommand() *cli.Command {
 			if err = to_delete.Delete(); err != nil {
 				panic(err)
 			}
+
+			ref, err := repo1.References.Dwim(branchName)
+			if err != nil {
+				panic(err)
+			}
+			defer ref.Free()
+
+			options, err := git.NewWorktreeAddOptions(1, 0, ref)
+			if err != nil {
+				panic(err)
+			}
+			if _, err = git.AddWorktree(repo1, branchName, filepath.Join(repo1.Path(), ref.Shorthand()), options); err != nil {
+				panic(err)
+			}
 			// tree, err := commit.Tree()
 			// repo.CheckoutTree(tree, &CheckoutOpts{Strategy: CheckoutSafe})
 			return nil
@@ -167,8 +181,8 @@ func RunCommand() *cli.Command {
 func runFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:   "cpuprofile",
-			Usage:  "write cpu profile to file",
+			Name:    "cpuprofile",
+			Usage:   "write cpu profile to file",
 			EnvVars: []string{"CPU_PROFILE"},
 		},
 	}
