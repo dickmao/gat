@@ -110,6 +110,11 @@ func main() {
 		os.ModePerm); err != nil {
 		panic(err)
 	}
+	config, err := repo1.Config()
+	if err != nil {
+		panic(err)
+	}
+	config.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 	if err = app.RunContext(commands.NewContext(repo, repo1), os.Args); err != nil {
 		panic(err)
 	}

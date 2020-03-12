@@ -69,10 +69,9 @@ func TestCommand() *cli.Command {
 
 func CreateCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "run",
+		Name:  "create",
 		Flags: createFlags(),
 		Action: func(c *cli.Context) error {
-			// fmt.Println("Bad Bad Leroy Brown: ", c.Args().First())
 			if cpuProfile := c.String("cpuprofile"); cpuProfile != "" {
 				f, err := os.Create(cpuProfile)
 				if err != nil {
@@ -86,39 +85,21 @@ func CreateCommand() *cli.Command {
 			}
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			config, err := repo1.Config()
-			if err != nil {
-				panic(err)
-			}
-			config.SetString("remote.origin.fetch",
-				"refs/heads/*:refs/heads/*")
-			sig := &git.Signature{
-				Name:  "-",
-				Email: "-",
-				When:  time.Now()}
 			to_return, err := repo.Head()
 			if err != nil {
 				panic(err)
 			}
 			defer to_return.Free()
+			sig := &git.Signature{
+				Name:  "-",
+				Email: "-",
+				When:  time.Now()}
 			_, err = repo.Stashes.Save(
 				sig, "", git.StashDefault|git.StashKeepIndex|git.StashIncludeUntracked)
 			if err != nil {
 				panic(err)
 			}
 			opts, _ := git.DefaultStashApplyOptions()
-
-			// odb, err := repo.Odb()
-			// if err != nil {
-			// 	panic(err)
-			// }
-			// rannum := rand.Uint64()
-			// bs := make([]byte, unsafe.Sizeof(rannum))
-			// binary.LittleEndian.PutUint64(bs, rannum)
-			// oid, err = odb.Hash(bs, git.ObjectCommit)
-			// if err != nil {
-			// 	panic(err)
-			// }
 
 			scanner := bufio.NewScanner(os.Stdin)
 			scanner.Scan()
@@ -133,7 +114,6 @@ func CreateCommand() *cli.Command {
 				panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
 			}
 
-			// branchName := fmt.Sprintf("gat-%s", oid)[0:14]
 			commit, _ := headCommit(repo)
 			defer commit.Free()
 			to_delete, err := repo.CreateBranch(branchName, commit, false)
