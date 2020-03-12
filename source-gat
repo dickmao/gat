@@ -1,0 +1,19 @@
+function gat() {
+  local output
+  local commands
+  local args
+  args="$*"
+  commands=("run" "test" "edit" "list" "help")
+  if [ "$#" -eq 1 ] && [[ ! " ${commands[@]} " =~ " $1 " ]] ; then
+    args="edit $*" 
+  fi
+  output=$($GOPATH/src/github.com/dickmao/gat/gat $args)
+  if [ $? = 7 ]; then
+    eval "$output"
+  else
+    echo "$output"
+    return $?
+  fi
+}
+ 
+
