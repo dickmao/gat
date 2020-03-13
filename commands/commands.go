@@ -16,17 +16,15 @@ import (
 type wrapper struct {
 	context.Context
 	repo, repo1 *git.Repository
-	worktree    *git.Worktree
 }
 
 type key int
 
 const repoKey key = 0
 const repo1Key key = 1
-const worktreeKey key = 2
 
-func NewContext(repo *git.Repository, repo1 *git.Repository, worktree *git.Worktree) context.Context {
-	return &wrapper{context.Background(), repo, repo1, worktree}
+func NewContext(repo *git.Repository, repo1 *git.Repository) context.Context {
+	return &wrapper{context.Background(), repo, repo1}
 }
 
 func (ctx *wrapper) Value(key interface{}) interface{} {
@@ -85,13 +83,7 @@ func CreateCommand() *cli.Command {
 				}
 				defer pprof.StopCPUProfile()
 			}
-			var repo *git.Repository
-
-			if c.Context.Value(worktreeKey).(*git.Worktree) != nil {
-				repo = c.Context.Value(worktreeKey).(*git.Worktree).Repo
-			} else {
-				repo = c.Context.Value(repoKey).(*git.Repository)
-			}
+			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			to_return, err := repo.Head()
 			if err != nil {
@@ -109,13 +101,17 @@ func CreateCommand() *cli.Command {
 			}
 			opts, _ := git.DefaultStashApplyOptions()
 
-			scanner := bufio.NewScanner(os.Stdin)
-			scanner.Scan()
-			if err := scanner.Err(); err != nil {
-				repo.Stashes.Pop(0, opts)
-				panic(err)
+			branchName := c.Args().Get(0)
+			if branchName == "" {
+				scanner := bufio.NewScanner(os.Stdin)
+				scanner.Scan()
+				if err := scanner.Err(); err != nil {
+					repo.Stashes.Pop(0, opts)
+					panic(err)
+				}
+				branchName = scanner.Text()
 			}
-			branchName := scanner.Text()
+
 			if old_branch, err := repo1.LookupBranch(branchName, git.BranchLocal); err == nil {
 				defer old_branch.Free()
 				repo.Stashes.Pop(0, opts)

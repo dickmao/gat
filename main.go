@@ -70,17 +70,18 @@ func main() {
 		panic(err)
 	}
 	defer repo.Free()
+	toplevel := repo
 
 	worktree, err := repo.NewWorktreeFromSubrepository()
 	if err == nil {
 		defer worktree.Free()
-		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())))
+		toplevel, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())))
 		if err != nil {
 			panic(err)
 		}
-		defer repo.Free()
+		defer toplevel.Free()
 	}
-	git_dir1, err := git.Discover(filepath.Join(repo.Workdir(), ".gat"),
+	git_dir1, err := git.Discover(filepath.Join(toplevel.Workdir(), ".gat"),
 		true, nil)
 	var repo1 *git.Repository
 	if err != nil {
@@ -110,7 +111,7 @@ func main() {
 		panic(err)
 	}
 	config.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
-	if err = app.RunContext(commands.NewContext(repo, repo1, worktree), os.Args); err != nil {
+	if err = app.RunContext(commands.NewContext(repo, repo1), os.Args); err != nil {
 		panic(err)
 	}
 }
