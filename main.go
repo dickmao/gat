@@ -80,6 +80,7 @@ func main() {
 		}
 		defer repo.Free()
 	}
+
 	git_dir1, err := git.Discover(filepath.Join(repo.Workdir(), ".gat"),
 		true, nil)
 	var repo1 *git.Repository
