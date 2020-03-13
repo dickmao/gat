@@ -16,15 +16,17 @@ import (
 type wrapper struct {
 	context.Context
 	repo, repo1 *git.Repository
+	worktree    *git.Worktree
 }
 
 type key int
 
 const repoKey key = 0
 const repo1Key key = 1
+const worktreeKey key = 2
 
-func NewContext(repo *git.Repository, repo1 *git.Repository) context.Context {
-	return &wrapper{context.Background(), repo, repo1}
+func NewContext(repo *git.Repository, repo1 *git.Repository, worktree *git.Worktree) context.Context {
+	return &wrapper{context.Background(), repo, repo1, worktree}
 }
 
 func (ctx *wrapper) Value(key interface{}) interface{} {
@@ -83,7 +85,13 @@ func CreateCommand() *cli.Command {
 				}
 				defer pprof.StopCPUProfile()
 			}
-			repo := c.Context.Value(repoKey).(*git.Repository)
+			var repo *git.Repository
+
+			if c.Context.Value(worktreeKey).(*git.Worktree) != nil {
+				repo = c.Context.Value(worktreeKey).(*git.Worktree).Repo
+			} else {
+				repo = c.Context.Value(repoKey).(*git.Repository)
+			}
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			to_return, err := repo.Head()
 			if err != nil {
@@ -114,7 +122,10 @@ func CreateCommand() *cli.Command {
 				panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
 			}
 
-			commit, _ := headCommit(repo)
+			commit, err := headCommit(repo)
+			if err != nil {
+				panic(err)
+			}
 			defer commit.Free()
 			to_delete, err := repo.CreateBranch(branchName, commit, false)
 			if err != nil {

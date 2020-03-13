@@ -14,7 +14,7 @@ import (
 	"github.com/urfave/cli"
 )
 
-func discoverOrigin(path string) (string, error) {
+func getRepo(path string) (*git.Repository, error) {
 	git_dir, err := git.Discover(path, true, nil)
 	if err != nil {
 		panic(err)
@@ -22,8 +22,11 @@ func discoverOrigin(path string) (string, error) {
 	if filepath.Base(filepath.Clean(git_dir)) == ".gat" {
 		git_dir, err = git.Discover(filepath.Dir(filepath.Clean(git_dir)),
 			true, nil)
+		if err != nil {
+			panic(err)
+		}
 	}
-	return git_dir, err
+	return git.OpenRepository(filepath.Clean(git_dir))
 }
 
 func main() {
@@ -62,29 +65,21 @@ func main() {
 		return nil
 	}
 
-	git_dir, err := discoverOrigin(".")
-	if err != nil {
-		panic(err)
-	}
-	repo, err := git.OpenRepository(filepath.Clean(git_dir))
+	repo, err := getRepo(".")
 	if err != nil {
 		panic(err)
 	}
 	defer repo.Free()
 
-	if worktree, err := repo.NewWorktreeFromSubrepository(); err == nil {
+	worktree, err := repo.NewWorktreeFromSubrepository()
+	if err == nil {
 		defer worktree.Free()
-		if git_dir, err =
-			discoverOrigin(filepath.Dir(filepath.Clean(git_dir))); err != nil {
-			panic(err)
-		}
-		repo, err = git.OpenRepository(filepath.Clean(git_dir))
+		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())))
 		if err != nil {
 			panic(err)
 		}
 		defer repo.Free()
 	}
-
 	git_dir1, err := git.Discover(filepath.Join(repo.Workdir(), ".gat"),
 		true, nil)
 	var repo1 *git.Repository
@@ -115,7 +110,7 @@ func main() {
 		panic(err)
 	}
 	config.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
-	if err = app.RunContext(commands.NewContext(repo, repo1), os.Args); err != nil {
+	if err = app.RunContext(commands.NewContext(repo, repo1, worktree), os.Args); err != nil {
 		panic(err)
 	}
 }
