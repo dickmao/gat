@@ -81,11 +81,14 @@ func main() {
 		defer repo.Free()
 	}
 
-	git_dir1, err := git.Discover(filepath.Join(repo.Workdir(), ".gat"),
-		true, nil)
+	gat_path := filepath.Join(repo.Workdir(), ".gat")
+	git_dir1, err := git.Discover(gat_path, true, nil)
 	var repo1 *git.Repository
 	if err != nil {
-		panic(err)
+		repo1, err = git.Clone(repo.Path(), gat_path, &git.CloneOptions{Bare: true})
+		if err != nil {
+			panic(err)
+		}
 	} else {
 		repo1, err = git.OpenRepository(filepath.Clean(git_dir1))
 		if err != nil {
