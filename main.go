@@ -109,12 +109,22 @@ func main() {
 		os.ModePerm); err != nil {
 		panic(err)
 	}
-	config, err := repo1.Config()
+	config1, err := repo1.Config()
 	if err != nil {
 		panic(err)
 	}
-	config.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
-	if err = app.RunContext(commands.NewContext(repo, repo1, worktree), os.Args); err != nil {
+	config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
+
+	config_loc, err := git.ConfigFindGlobal()
+	if err != nil {
+		panic(err)
+	}
+	config, err := git.OpenOndisk(config_loc)
+	if err != nil {
+		panic(err)
+	}
+	defer config.Free()
+	if err = app.RunContext(commands.NewContext(repo, repo1, worktree, config), os.Args); err != nil {
 		panic(err)
 	}
 }
