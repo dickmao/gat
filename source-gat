@@ -2,12 +2,38 @@ function gat() {
   local output
   local commands
   local args
-  args="$*"
+  local key
+  local project
+  local zone
+  args=()
   commands=("create" "test" "edit" "list" "help")
-  if [ "$#" -eq 1 ] && [[ ! " ${commands[@]} " =~ " $1 " ]] ; then
-    args="edit $*"
+  while [[ $# -gt -0 ]] ; do
+      key=$1
+      case "$key" in
+	  --project)
+	      project=$2
+	      shift
+	      shift
+	      ;;
+	  --zone)
+	      zone=$2
+	      shift
+	      shift
+	      ;;
+	  *)
+              args+=($key)
+	      shift
+	      ;;
+      esac
+  done
+  zone=${zone:-$(gcloud config get-value compute/zone)}
+  project=${project:-$(gcloud config get-value core/project)}
+  if [ "${#args[@]}" -eq 1 ] && [[ ! " ${commands[@]} " =~ " ${args[0]} " ]] ; then
+      args=(--project $project --zone $zone edit ${args[@]})
+  else
+      args=(--project $project --zone $zone ${args[@]})
   fi
-  output=$($GOPATH/src/github.com/dickmao/gat/gat $args)
+  output=$($GOPATH/src/github.com/dickmao/gat/gat ${args[@]})
   if [ $? = 7 ]; then
     eval "$output"
   else

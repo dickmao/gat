@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime/pprof"
 	"sync"
@@ -21,6 +21,7 @@ import (
 	"github.com/urfave/cli"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudresourcemanager/v1"
+	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/option"
 )
 
@@ -39,8 +40,9 @@ const worktreeKey key = 2
 const configKey key = 3
 
 var (
-	cloudresourcemanager_svc *cloudresourcemanager.Service
-	once                     sync.Once
+	resourceManagerService *cloudresourcemanager.Service
+	computeService         *compute.Service
+	once                   sync.Once
 )
 
 func processCpuProfileFlag(c *cli.Context) {
@@ -91,7 +93,7 @@ func headCommit(repo *git.Repository) (*git.Commit, error) {
 	return commit, nil
 }
 
-func getService() *cloudresourcemanager.Service {
+func getServiceResourceManager() *cloudresourcemanager.Service {
 	once.Do(func() {
 		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS",
 			"/home/dick/gke/service-account.json")
@@ -101,32 +103,63 @@ func getService() *cloudresourcemanager.Service {
 		if err != nil {
 			log.Fatal(err)
 		}
-		cloudresourcemanager_svc, err =
+		resourceManagerService, err =
 			cloudresourcemanager.NewService(context.Background(), option.WithCredentials(creds))
 		if err != nil {
 			panic(err)
 		}
 	})
-	return cloudresourcemanager_svc
+	return resourceManagerService
+}
+
+func getService() *compute.Service {
+	once.Do(func() {
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS",
+			"/home/dick/gke/service-account.json")
+		ctx := context.Background()
+
+		creds, err := google.FindDefaultCredentials(ctx, cloudresourcemanager.CloudPlatformScope)
+		if err != nil {
+			log.Fatal(err)
+		}
+		computeService, err =
+			compute.NewService(context.Background(), option.WithCredentials(creds))
+		if err != nil {
+			panic(err)
+		}
+	})
+	return computeService
 }
 
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
+			project := c.String("project")
+			zone := c.String("zone")
+			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			config1, err := repo1.Config()
 			if err != nil {
 				panic(err)
 			}
 			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
-			project := path.Base(repo.Workdir())
-			config1.SetString("")
+			config1.SetString("gat.last_project", project)
 
-			// detect Dockerfile
-			// docker build . -t branchName
+			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
+			bytes, err := ioutil.ReadFile("/home/dick/go/src/github.com/dickmao/gat/test-repo/cloud-config")
+			if err != nil {
+				panic(err)
+			}
+			user_data := string(bytes)
 			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			head, err := worktree.Repo.Head()
+			var branch_repo *git.Repository
+			if worktree != nil {
+				branch_repo = worktree.Repo
+			} else {
+				branch_repo = repo
+			}
+			head, err := branch_repo.Head()
 			if err != nil {
 				panic(err)
 			}
@@ -136,23 +169,62 @@ func TestCommand() *cli.Command {
 				panic(err)
 			}
 			defer ref.Free()
-			fmt.Println("Branch is", ref.Shorthand())
+			instance := &compute.Instance{
+				Name:        project + "-" + ref.Shorthand(),
+				Description: "compute sample instance",
+				MachineType: prefix + "/zones/" + zone + "/machineTypes/n1-standard-1",
+				Metadata: &compute.Metadata{
+					Items: []*compute.MetadataItems{
+						{
+							Key:   "user-data",
+							Value: &user_data,
+						},
+					},
+				},
+				Scheduling: &compute.Scheduling{
+					Preemptible: true,
+				},
+				Disks: []*compute.AttachedDisk{
+					{
+						AutoDelete: true,
+						Boot:       true,
+						Type:       "PERSISTENT",
+						InitializeParams: &compute.AttachedDiskInitializeParams{
 
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			project := path.Base(repo.Workdir())
-
-			rb := &cloudresourcemanager.Project{
-				Name:      project,
-				ProjectId: "gat-" + project,
-				Parent:    &cloudresourcemanager.ResourceId{Id: "208960056531", Type: "organization"},
+							SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
+						},
+					},
+				},
+				NetworkInterfaces: []*compute.NetworkInterface{
+					{
+						AccessConfigs: []*compute.AccessConfig{
+							{
+								Type: "ONE_TO_ONE_NAT",
+								Name: "External NAT",
+							},
+						},
+						Network: prefix + "/global/networks/default",
+					},
+				},
+				ServiceAccounts: []*compute.ServiceAccount{
+					{
+						Email: "service-account@api-project-421333809285.iam.gserviceaccount.com",
+						Scopes: []string{
+							compute.DevstorageFullControlScope,
+							compute.ComputeScope,
+						},
+					},
+				},
 			}
-
-			resp, err := getService().Projects.Create(rb).Do()
+			instancesService := compute.NewInstancesService(getService())
+			instancesService.Insert(project, zone, instance)
+			_, err = instancesService.Insert(project, zone, instance).Context(context.Background()).Do()
 			if err != nil {
 				panic(err)
 			}
 
-			fmt.Printf("%#v\n", resp)
+			// detect Dockerfile
+			// docker build . -t branchName
 			return nil
 		},
 	}

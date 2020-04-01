@@ -41,6 +41,22 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	app := cli.NewApp()
+
+	// source-gat will force-populate these if user doesn't specify
+	app.Flags = []cli.Flag{
+		&cli.StringFlag{
+			Name:     "project",
+			Required: true,
+			Aliases:  []string{"p"},
+			Usage:    "gcp project",
+		},
+		&cli.StringFlag{
+			Name:     "zone",
+			Required: true,
+			Aliases:  []string{"z"},
+			Usage:    "gcp zone",
+		},
+	}
 	app.Commands = []*cli.Command{
 		commands.CreateCommand(),
 		commands.TestCommand(),
