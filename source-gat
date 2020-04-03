@@ -6,7 +6,7 @@ function gat() {
   local project
   local zone
   args=()
-  commands=("create" "test" "edit" "list" "help")
+  commands=("create" "test" "edit" "list" "build" "run" "help")
   while [[ $# -gt -0 ]] ; do
       key=$1
       case "$key" in
@@ -33,7 +33,7 @@ function gat() {
   else
       args=(--project $project --zone $zone ${args[@]})
   fi
-  output=$($GOPATH/src/github.com/dickmao/gat/gat ${args[@]})
+  output=$($GOPATH/bin/gat ${args[@]})
   if [ $? = 7 ]; then
     eval "$output"
   else

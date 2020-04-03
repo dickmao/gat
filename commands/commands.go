@@ -3,6 +3,8 @@ package commands
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -14,6 +16,7 @@ import (
 
 	git "github.com/dickmao/git2go"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/jsonmessage"
@@ -22,6 +25,7 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/compute/v1"
+	"google.golang.org/api/container/v1"
 	"google.golang.org/api/option"
 )
 
@@ -42,6 +46,7 @@ const configKey key = 3
 var (
 	resourceManagerService *cloudresourcemanager.Service
 	computeService         *compute.Service
+	containerService       *container.Service
 	once                   sync.Once
 )
 
@@ -93,10 +98,15 @@ func headCommit(repo *git.Repository) (*git.Commit, error) {
 	return commit, nil
 }
 
+func ensureApplicationDefaultCredentials() {
+	if _, ok := os.LookupEnv("GOOGLE_APPLICATION_CREDENTIALS"); !ok {
+		panic("Must currently set GOOGLE_APPLICATION_CREDENTIALS to service_account.json")
+	}
+}
+
 func getServiceResourceManager() *cloudresourcemanager.Service {
 	once.Do(func() {
-		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS",
-			"/home/dick/gke/service-account.json")
+		ensureApplicationDefaultCredentials()
 		ctx := context.Background()
 
 		creds, err := google.FindDefaultCredentials(ctx, cloudresourcemanager.CloudPlatformScope)
@@ -114,11 +124,10 @@ func getServiceResourceManager() *cloudresourcemanager.Service {
 
 func getService() *compute.Service {
 	once.Do(func() {
-		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS",
-			"/home/dick/gke/service-account.json")
+		ensureApplicationDefaultCredentials()
 		ctx := context.Background()
 
-		creds, err := google.FindDefaultCredentials(ctx, cloudresourcemanager.CloudPlatformScope)
+		creds, err := google.FindDefaultCredentials(ctx, compute.CloudPlatformScope)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -131,14 +140,92 @@ func getService() *compute.Service {
 	return computeService
 }
 
+func getContainerService() *container.Service {
+	once.Do(func() {
+		ensureApplicationDefaultCredentials()
+		ctx := context.Background()
+
+		creds, err := google.FindDefaultCredentials(ctx, container.CloudPlatformScope)
+		if err != nil {
+			log.Fatal(err)
+		}
+		containerService, err =
+			container.NewService(context.Background(), option.WithCredentials(creds))
+		if err != nil {
+			panic(err)
+		}
+	})
+	return containerService
+}
+
+func getBranchRepo(c *cli.Context) *git.Repository {
+	repo := c.Context.Value(repoKey).(*git.Repository)
+	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+	var branch_repo *git.Repository
+	if worktree != nil {
+		branch_repo = worktree.Repo
+	} else {
+		branch_repo = repo
+	}
+	return branch_repo
+}
+
+func constructTag(c *cli.Context) string {
+	branch_repo := getBranchRepo(c)
+	head, err := branch_repo.Head()
+	if err != nil {
+		panic(err)
+	}
+	defer head.Free()
+	ref, err := head.Resolve()
+	if err != nil {
+		panic(err)
+	}
+	defer ref.Free()
+	repo := c.Context.Value(repoKey).(*git.Repository)
+	return filepath.Base(filepath.Clean(repo.Workdir())) + ":" + ref.Shorthand()
+}
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
 			project := c.String("project")
-			zone := c.String("zone")
+			if err := buildImage(project, constructTag(c)); err != nil {
+				panic(err)
+			}
+			return nil
+		},
+	}
+}
+
+func BuildCommand() *cli.Command {
+	return &cli.Command{
+		Name: "build",
+		Action: func(c *cli.Context) error {
+			project := c.String("project")
+			if err := buildImage(project, constructTag(c)); err != nil {
+				panic(err)
+			}
+			return nil
+		},
+	}
+}
+
+func RunCommand() *cli.Command {
+	return &cli.Command{
+		Name: "run",
+		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			config := c.Context.Value(configKey).(*git.Config)
+			project := c.String("project")
+			zone := c.String("zone")
+			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+				[]string{c.App.Name, "--project", project, "--zone", zone, "build"}); err != nil {
+				panic(err)
+			}
 			config1, err := repo1.Config()
 			if err != nil {
 				panic(err)
@@ -147,18 +234,9 @@ func TestCommand() *cli.Command {
 			config1.SetString("gat.last_project", project)
 
 			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
-			bytes, err := ioutil.ReadFile("/home/dick/go/src/github.com/dickmao/gat/test-repo/cloud-config")
-			if err != nil {
-				panic(err)
-			}
-			user_data := string(bytes)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			var branch_repo *git.Repository
-			if worktree != nil {
-				branch_repo = worktree.Repo
-			} else {
-				branch_repo = repo
-			}
+
+			user_data := cloudConfig(CloudConfig{project, constructTag(c)})
+			branch_repo := getBranchRepo(c)
 			head, err := branch_repo.Head()
 			if err != nil {
 				panic(err)
@@ -222,31 +300,64 @@ func TestCommand() *cli.Command {
 			if err != nil {
 				panic(err)
 			}
-
-			// detect Dockerfile
-			// docker build . -t branchName
 			return nil
 		},
 	}
 }
 
-func buildImage() error {
+func buildImage(project string, tag string) error {
+	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
 	}
+	// remotecontext.MakeGitRepo(gitURL) clones and tars
+	// say file://./my-repo.git#branch but I need unstaged changes too
 	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{})
 	if err != nil {
 		panic(err)
 	}
 	defer buildContext.Close()
-	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{})
+	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{Tags: []string{tag}, ForceRemove: true})
 	if err != nil {
 		panic(err)
 	}
 	defer buildResponse.Body.Close()
 	termFd, isTerm := term.GetFdInfo(os.Stderr)
-	fmt.Println(buildResponse.OSType, jsonmessage.DisplayJSONMessagesStream(buildResponse.Body, os.Stderr, termFd, isTerm, nil))
+	jsonmessage.DisplayJSONMessagesStream(buildResponse.Body, os.Stderr, termFd, isTerm, nil)
+
+	if images, err := cli.ImageList(context.Background(),
+		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))}); err != nil || len(images) == 0 {
+		if len(images) == 0 {
+			panic(fmt.Sprintf("Image tagged %s not found", tag))
+		} else {
+			panic(err)
+		}
+	}
+	target := filepath.Join("gcr.io", project, tag)
+	err = cli.ImageTag(context.Background(), tag, target)
+	if err != nil {
+		panic(err)
+	}
+
+	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	if err != nil {
+		panic(err)
+	}
+	jsonBytes, _ := json.Marshal(map[string]string{
+		"username": "_json_key",
+		"password": string(bytes),
+	})
+
+	pushBody, err := cli.ImagePush(context.Background(), target,
+		types.ImagePushOptions{
+			RegistryAuth: base64.StdEncoding.EncodeToString(jsonBytes),
+		})
+	if err != nil {
+		panic(err)
+	}
+	defer pushBody.Close()
+	jsonmessage.DisplayJSONMessagesStream(pushBody, os.Stderr, termFd, isTerm, nil)
 	return nil
 }
 
@@ -531,8 +642,10 @@ func CreateCommand() *cli.Command {
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
 			config := c.Context.Value(configKey).(*git.Config)
+			project := c.String("project")
+			zone := c.String("zone")
 			return c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "edit", branchName})
+				[]string{c.App.Name, "--project", project, "--zone", zone, "edit", branchName})
 		},
 	}
 }

@@ -60,6 +60,8 @@ func main() {
 	app.Commands = []*cli.Command{
 		commands.CreateCommand(),
 		commands.TestCommand(),
+		commands.RunCommand(),
+		commands.BuildCommand(),
 		commands.EditCommand(),
 		commands.ListCommand(),
 	}
