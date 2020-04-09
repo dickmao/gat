@@ -11,9 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"cloud.google.com/go/storage"
 	git "github.com/dickmao/git2go"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
@@ -26,6 +29,8 @@ import (
 	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/container/v1"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/api/iam/v1"
 	"google.golang.org/api/option"
 )
 
@@ -47,8 +52,17 @@ var (
 	resourceManagerService *cloudresourcemanager.Service
 	computeService         *compute.Service
 	containerService       *container.Service
+	storageClient          *storage.Client
 	once                   sync.Once
 )
+
+type ServiceAccount struct {
+	Type           string
+	Project_id     string
+	Private_key_id string
+	Client_email   string
+	Client_id      string
+}
 
 func processCpuProfileFlag(c *cli.Context) {
 	if cpuProfile := c.String("cpuprofile"); cpuProfile != "" {
@@ -83,6 +97,23 @@ func (ctx *wrapper) Value(key interface{}) interface{} {
 	}
 }
 
+func gatId(c *cli.Context) string {
+	return c.String("project") + "-" + strings.ReplaceAll(constructTag(c), ":", "-")
+}
+
+func ensureBucket(c *cli.Context) error {
+	bucket := getClientStorage().Bucket(gatId(c))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	if err := bucket.Create(ctx, c.String("project"), &storage.BucketAttrs{}); err != nil {
+		if err.(*googleapi.Error).Code == 409 {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func headCommit(repo *git.Repository) (*git.Commit, error) {
 	head, err := repo.Head()
 	if err != nil {
@@ -102,6 +133,17 @@ func ensureApplicationDefaultCredentials() {
 	if _, ok := os.LookupEnv("GOOGLE_APPLICATION_CREDENTIALS"); !ok {
 		panic("Must currently set GOOGLE_APPLICATION_CREDENTIALS to service_account.json")
 	}
+}
+
+func getClientStorage() *storage.Client {
+	once.Do(func() {
+		ensureApplicationDefaultCredentials()
+		var err error
+		if storageClient, err = storage.NewClient(context.Background()); err != nil {
+			panic(err)
+		}
+	})
+	return storageClient
 }
 
 func getServiceResourceManager() *cloudresourcemanager.Service {
@@ -190,10 +232,10 @@ func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
-			project := c.String("project")
-			if err := buildImage(project, constructTag(c)); err != nil {
+			if err := ensureBucket(c); err != nil {
 				panic(err)
 			}
+
 			return nil
 		},
 	}
@@ -212,9 +254,9 @@ func BuildCommand() *cli.Command {
 	}
 }
 
-func RunCommand() *cli.Command {
+func PushCommand() *cli.Command {
 	return &cli.Command{
-		Name: "run",
+		Name: "push",
 		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
@@ -226,6 +268,28 @@ func RunCommand() *cli.Command {
 				[]string{c.App.Name, "--project", project, "--zone", zone, "build"}); err != nil {
 				panic(err)
 			}
+			if err := pushImage(project, constructTag(c)); err != nil {
+				panic(err)
+			}
+			return nil
+		},
+	}
+}
+
+func RunRemoteCommand() *cli.Command {
+	return &cli.Command{
+		Name: "run-remote",
+		Action: func(c *cli.Context) error {
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			repo1 := c.Context.Value(repo1Key).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			config := c.Context.Value(configKey).(*git.Config)
+			project := c.String("project")
+			zone := c.String("zone")
+			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+				[]string{c.App.Name, "--project", project, "--zone", zone, "push"}); err != nil {
+				panic(err)
+			}
 			config1, err := repo1.Config()
 			if err != nil {
 				panic(err)
@@ -235,20 +299,18 @@ func RunCommand() *cli.Command {
 
 			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
 
-			user_data := cloudConfig(CloudConfig{project, constructTag(c)})
-			branch_repo := getBranchRepo(c)
-			head, err := branch_repo.Head()
+			bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 			if err != nil {
 				panic(err)
 			}
-			defer head.Free()
-			ref, err := head.Resolve()
-			if err != nil {
-				panic(err)
-			}
-			defer ref.Free()
+			quoted_escaped := strconv.Quote(string(bytes))
+			cloudconfig := CloudConfig{project, constructTag(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), strings.Replace(quoted_escaped[1:len(quoted_escaped)-1], "%", "%%", -1)}
+			user_data := UserData(cloudconfig)
+			shutdown_script := Shutdown(cloudconfig)
+			var serviceAccount ServiceAccount
+			json.Unmarshal(bytes, &serviceAccount)
 			instance := &compute.Instance{
-				Name:        project + "-" + ref.Shorthand(),
+				Name:        gatId(c),
 				Description: "compute sample instance",
 				MachineType: prefix + "/zones/" + zone + "/machineTypes/n1-standard-1",
 				Metadata: &compute.Metadata{
@@ -256,6 +318,10 @@ func RunCommand() *cli.Command {
 						{
 							Key:   "user-data",
 							Value: &user_data,
+						},
+						{
+							Key:   "shutdown-script",
+							Value: &shutdown_script,
 						},
 					},
 				},
@@ -286,10 +352,11 @@ func RunCommand() *cli.Command {
 				},
 				ServiceAccounts: []*compute.ServiceAccount{
 					{
-						Email: "service-account@api-project-421333809285.iam.gserviceaccount.com",
+						Email: serviceAccount.Client_email,
 						Scopes: []string{
 							compute.DevstorageFullControlScope,
 							compute.ComputeScope,
+							iam.CloudPlatformScope,
 						},
 					},
 				},
@@ -303,6 +370,80 @@ func RunCommand() *cli.Command {
 			return nil
 		},
 	}
+}
+
+func RunLocalCommand() *cli.Command {
+	return &cli.Command{
+		Name: "run-local",
+		Action: func(c *cli.Context) error {
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			repo1 := c.Context.Value(repo1Key).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			config := c.Context.Value(configKey).(*git.Config)
+			project := c.String("project")
+			zone := c.String("zone")
+			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+				[]string{c.App.Name, "--project", project, "--zone", zone, "build"}); err != nil {
+				panic(err)
+			}
+			config1, err := repo1.Config()
+			if err != nil {
+				panic(err)
+			}
+			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
+			config1.SetString("gat.last_project", project)
+
+			// would use docker cp but won't know WORKDIR
+			// docker -v dirname(GOOGLE_APPLICATION_CREDENTIALS):/stash --rm --entrypoint "/bin/cp" tag -c "/stash/basename(GOOGLE_APPLICATION_CREDENTIALS) ."
+			// docker commit carcass to-run
+			// docker run --privileged --rm to-run
+
+			return nil
+		},
+	}
+}
+
+func pushImage(project string, tag string) error {
+	ensureApplicationDefaultCredentials()
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		panic(err)
+	}
+	if images, err := cli.ImageList(context.Background(),
+		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))}); err != nil || len(images) == 0 {
+		if len(images) == 0 {
+			panic(fmt.Sprintf("Image tagged %s not found", tag))
+		} else {
+			panic(err)
+		}
+	}
+	target := filepath.Join("gcr.io", project, tag)
+	err = cli.ImageTag(context.Background(), tag, target)
+	if err != nil {
+		panic(err)
+	}
+	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	if err != nil {
+		panic(err)
+	}
+	jsonBytes, _ := json.Marshal(map[string]string{
+		"username": "_json_key",
+		"password": string(bytes),
+	})
+
+	pushBody, err := cli.ImagePush(context.Background(), target,
+		types.ImagePushOptions{
+			RegistryAuth: base64.StdEncoding.EncodeToString(jsonBytes),
+		})
+	if err != nil {
+		panic(err)
+	}
+	defer pushBody.Close()
+	termFd, isTerm := term.GetFdInfo(os.Stderr)
+	if err = jsonmessage.DisplayJSONMessagesStream(pushBody, os.Stderr, termFd, isTerm, nil); err != nil {
+		panic(err)
+	}
+	return nil
 }
 
 func buildImage(project string, tag string) error {
@@ -324,40 +465,9 @@ func buildImage(project string, tag string) error {
 	}
 	defer buildResponse.Body.Close()
 	termFd, isTerm := term.GetFdInfo(os.Stderr)
-	jsonmessage.DisplayJSONMessagesStream(buildResponse.Body, os.Stderr, termFd, isTerm, nil)
-
-	if images, err := cli.ImageList(context.Background(),
-		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))}); err != nil || len(images) == 0 {
-		if len(images) == 0 {
-			panic(fmt.Sprintf("Image tagged %s not found", tag))
-		} else {
-			panic(err)
-		}
-	}
-	target := filepath.Join("gcr.io", project, tag)
-	err = cli.ImageTag(context.Background(), tag, target)
-	if err != nil {
+	if err := jsonmessage.DisplayJSONMessagesStream(buildResponse.Body, os.Stderr, termFd, isTerm, nil); err != nil {
 		panic(err)
 	}
-
-	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-	if err != nil {
-		panic(err)
-	}
-	jsonBytes, _ := json.Marshal(map[string]string{
-		"username": "_json_key",
-		"password": string(bytes),
-	})
-
-	pushBody, err := cli.ImagePush(context.Background(), target,
-		types.ImagePushOptions{
-			RegistryAuth: base64.StdEncoding.EncodeToString(jsonBytes),
-		})
-	if err != nil {
-		panic(err)
-	}
-	defer pushBody.Close()
-	jsonmessage.DisplayJSONMessagesStream(pushBody, os.Stderr, termFd, isTerm, nil)
 	return nil
 }
 

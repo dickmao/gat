@@ -8,6 +8,7 @@ import (
 	"time"
 
 	commands "github.com/dickmao/gat/commands"
+
 	git "github.com/dickmao/git2go"
 
 	"github.com/sirupsen/logrus"
@@ -60,8 +61,10 @@ func main() {
 	app.Commands = []*cli.Command{
 		commands.CreateCommand(),
 		commands.TestCommand(),
-		commands.RunCommand(),
+		commands.RunRemoteCommand(),
+		commands.RunLocalCommand(),
 		commands.BuildCommand(),
+		commands.PushCommand(),
 		commands.EditCommand(),
 		commands.ListCommand(),
 	}
