@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -49,11 +48,14 @@ const worktreeKey key = 2
 const configKey key = 3
 
 var (
-	resourceManagerService *cloudresourcemanager.Service
-	computeService         *compute.Service
-	containerService       *container.Service
-	storageClient          *storage.Client
-	once                   sync.Once
+	resourceManagerService     *cloudresourcemanager.Service
+	computeService             *compute.Service
+	containerService           *container.Service
+	storageClient              *storage.Client
+	resourceManagerServiceOnce sync.Once
+	computeServiceOnce         sync.Once
+	containerServiceOnce       sync.Once
+	storageClientOnce          sync.Once
 )
 
 type ServiceAccount struct {
@@ -136,7 +138,7 @@ func ensureApplicationDefaultCredentials() {
 }
 
 func getClientStorage() *storage.Client {
-	once.Do(func() {
+	storageClientOnce.Do(func() {
 		ensureApplicationDefaultCredentials()
 		var err error
 		if storageClient, err = storage.NewClient(context.Background()); err != nil {
@@ -147,13 +149,13 @@ func getClientStorage() *storage.Client {
 }
 
 func getServiceResourceManager() *cloudresourcemanager.Service {
-	once.Do(func() {
+	resourceManagerServiceOnce.Do(func() {
 		ensureApplicationDefaultCredentials()
 		ctx := context.Background()
 
 		creds, err := google.FindDefaultCredentials(ctx, cloudresourcemanager.CloudPlatformScope)
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 		resourceManagerService, err =
 			cloudresourcemanager.NewService(context.Background(), option.WithCredentials(creds))
@@ -165,16 +167,18 @@ func getServiceResourceManager() *cloudresourcemanager.Service {
 }
 
 func getService() *compute.Service {
-	once.Do(func() {
+	computeServiceOnce.Do(func() {
 		ensureApplicationDefaultCredentials()
 		ctx := context.Background()
-
 		creds, err := google.FindDefaultCredentials(ctx, compute.CloudPlatformScope)
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 		computeService, err =
-			compute.NewService(context.Background(), option.WithCredentials(creds))
+			compute.NewService(ctx, option.WithCredentials(creds))
+		if computeService == nil {
+			panic("why")
+		}
 		if err != nil {
 			panic(err)
 		}
@@ -183,13 +187,13 @@ func getService() *compute.Service {
 }
 
 func getContainerService() *container.Service {
-	once.Do(func() {
+	containerServiceOnce.Do(func() {
 		ensureApplicationDefaultCredentials()
 		ctx := context.Background()
 
 		creds, err := google.FindDefaultCredentials(ctx, container.CloudPlatformScope)
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 		containerService, err =
 			container.NewService(context.Background(), option.WithCredentials(creds))
@@ -297,14 +301,19 @@ func RunRemoteCommand() *cli.Command {
 			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 			config1.SetString("gat.last_project", project)
 
-			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
+			if err = ensureBucket(c); err != nil {
+				panic(err)
+			}
 
+			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
 			bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 			if err != nil {
 				panic(err)
 			}
 			quoted_escaped := strconv.Quote(string(bytes))
-			cloudconfig := CloudConfig{project, constructTag(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), strings.Replace(quoted_escaped[1:len(quoted_escaped)-1], "%", "%%", -1)}
+			modifier_escaped := strings.Replace(quoted_escaped[1:len(quoted_escaped)-1], "%", "%%", -1)
+			newline_escaped := strings.Replace(modifier_escaped, "\\\\n", "\\\\\\\\n", -1)
+			cloudconfig := CloudConfig{project, constructTag(c), gatId(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped}
 			user_data := UserData(cloudconfig)
 			shutdown_script := Shutdown(cloudconfig)
 			var serviceAccount ServiceAccount
@@ -362,9 +371,7 @@ func RunRemoteCommand() *cli.Command {
 				},
 			}
 			instancesService := compute.NewInstancesService(getService())
-			instancesService.Insert(project, zone, instance)
-			_, err = instancesService.Insert(project, zone, instance).Context(context.Background()).Do()
-			if err != nil {
+			if _, err = instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
 				panic(err)
 			}
 			return nil
@@ -452,6 +459,22 @@ func buildImage(project string, tag string) error {
 	if err != nil {
 		panic(err)
 	}
+
+	// evade <none> dangler
+	if images, err := cli.ImageList(context.Background(),
+		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))}); err != nil {
+		panic(err)
+	} else {
+		for _, image := range images {
+			if _, err = cli.ImageRemove(context.Background(), image.ID, types.ImageRemoveOptions{
+				Force:         true,
+				PruneChildren: true,
+			}); err != nil {
+				panic(err)
+			}
+		}
+	}
+
 	// remotecontext.MakeGitRepo(gitURL) clones and tars
 	// say file://./my-repo.git#branch but I need unstaged changes too
 	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{})

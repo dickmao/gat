@@ -8,6 +8,7 @@ import (
 type CloudConfig struct {
 	Project                   string
 	Tag                       string
+	Bucket                    string
 	ServiceAccountJson        string
 	ServiceAccountJsonContent string
 }
@@ -31,11 +32,11 @@ write_files:
     Environment="HOME=/var/tmp"
     WorkingDirectory=/var/tmp
     Type=oneshot
-    ExecStart=/bin/bash -c "echo $'{{ .ServiceAccountJsonContent }}' > $(basename {{ .ServiceAccountJson }})"
+    ExecStart=/bin/bash -c "echo $'{{ .ServiceAccountJsonContent }}' >$(basename {{ .ServiceAccountJson }})"
     ExecStart=/usr/bin/docker-credential-gcr configure-docker
     ExecStart=/usr/bin/docker pull gcr.io/{{ .Project }}/{{ .Tag }}
     ExecStart=/usr/bin/docker tag gcr.io/{{ .Project }}/{{ .Tag }} {{ .Tag }}
-    ExecStart=/bin/bash -c "/usr/bin/docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container -v $(pwd):/hosthome {{ .Tag }} -c \"cp /hosthome/$(basename {{ .ServiceAccountJson }}) . && touch sentinel\""
+    ExecStart=/bin/bash -c "/usr/bin/docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container -v $(pwd):/hosthome {{ .Tag }} -c \"cp /hosthome/$(basename {{ .ServiceAccountJson }}) . && chmod 600 ./$(basename {{ .ServiceAccountJson }}) && touch sentinel\""
 
 - path: /etc/systemd/system/gat1.service
   permissions: 0644
@@ -54,7 +55,7 @@ write_files:
     ExecStart=/usr/bin/docker run --privileged --name gat-run-container gat-sentinel
     ExecStart=/bin/bash -c "/usr/bin/docker commit gat-run-container gat-run"
     ExecStart=/usr/bin/docker rm gat-run-container
-    ExecStart=/usr/bin/docker run --rm --entrypoint "/bin/bash" gat-run -c "find . -not -path '*/\.*' -type f -newer sentinel"
+    ExecStart=/usr/bin/docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/\.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./service-account.json) rsync -r results gs://{{ .Bucket }}/results"
 
 runcmd:
 - systemctl daemon-reload
