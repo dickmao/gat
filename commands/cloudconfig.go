@@ -57,10 +57,26 @@ write_files:
     ExecStart=/usr/bin/docker rm gat-run-container
     ExecStart=/usr/bin/docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/\.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./service-account.json) rsync -r results gs://{{ .Bucket }}/results"
 
+- path: /etc/systemd/system/shutdown.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Shutdown
+    After=gat1.service
+
+    [Service]
+    Environment="HOME=/var/tmp"
+    WorkingDirectory=/var/tmp
+    Type=oneshot
+    ExecStart=/usr/bin/docker pull stedolan/jq
+    ExecStart=/bin/bash -c "curl -s --retry 2 -H \"Authorization: Bearer $(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/$(cat /var/tmp/service-account.json | /usr/bin/docker run --rm -i stedolan/jq -rc '.client_email')/token -H 'Metadata-Flavor: Google' | /usr/bin/docker run --rm -i stedolan/jq -rc '.access_token')\" -X DELETE https://compute.googleapis.com/compute/v1/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')/instances/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/id -H 'Metadata-Flavor: Google')"
+
 runcmd:
 - systemctl daemon-reload
 - systemctl start gat0.service
 - systemctl start gat1.service
+- systemctl start shutdown.service
 `
 	t := template.Must(template.New("cloudConfig").Parse(templ))
 	var buf bytes.Buffer
