@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -17,12 +20,19 @@ import (
 
 	"cloud.google.com/go/storage"
 	git "github.com/dickmao/git2go"
+	"github.com/docker/distribution/reference"
+	v2 "github.com/docker/distribution/registry/api/v2"
+	distributionclient "github.com/docker/distribution/registry/client"
+	"github.com/docker/distribution/registry/client/auth"
+	"github.com/docker/distribution/registry/client/auth/challenge"
+	"github.com/docker/distribution/registry/client/transport"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/term"
+	"github.com/docker/docker/registry"
 	"github.com/urfave/cli"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudresourcemanager/v1"
@@ -232,14 +242,166 @@ func constructTag(c *cli.Context) string {
 	return filepath.Base(filepath.Clean(repo.Workdir())) + ":" + ref.Shorthand()
 }
 
+func PingV2Registry(endpoint *url.URL, transport http.RoundTripper) (challenge.Manager, error) {
+	pingClient := &http.Client{
+		Transport: transport,
+		Timeout:   15 * time.Second,
+	}
+	endpointStr := strings.TrimRight(endpoint.String(), "/") + "/v2/"
+	req, err := http.NewRequest(http.MethodGet, endpointStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := pingClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	challengeManager := challenge.NewSimpleManager()
+	if err := challengeManager.AddResponse(resp); err != nil {
+		return nil, registry.PingResponseError{
+			Err: err,
+		}
+	}
+
+	return challengeManager, nil
+}
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
+			// project := c.String("project")
+			// repo := c.Context.Value(repoKey).(*git.Repository)
 			if err := ensureBucket(c); err != nil {
 				panic(err)
 			}
 
+			project := c.String("project")
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			if name, err := reference.WithName(filepath.Join("gcr.io", project, filepath.Base(filepath.Clean(repo.Workdir())))); err != nil {
+				panic(err)
+			} else {
+				repoInfo, err := registry.ParseRepositoryInfo(name)
+				if err != nil {
+					panic(err)
+				}
+				// registryService can only search for stars
+				registryService, err := registry.NewService(registry.ServiceOptions{
+					InsecureRegistries: []string{"gcr.io"},
+				})
+				if err != nil {
+					panic(err)
+				}
+				bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+				if err != nil {
+					panic(err)
+				}
+				if _, _, err := registryService.Auth(context.Background(), &types.AuthConfig{
+					ServerAddress: "gcr.io",
+					Username:      "_json_key",
+					Password:      string(bytes),
+				}, ""); err != nil {
+					panic(err)
+				}
+				endpoints, err := registryService.LookupPushEndpoints(reference.Domain(repoInfo.Name))
+				if err != nil {
+					panic(err)
+				}
+				// Default to the highest priority endpoint to return
+				if !repoInfo.Index.Secure {
+					for _, ep := range endpoints {
+						if ep.URL.Scheme == "http" {
+							endpoints[0] = ep
+						}
+					}
+				}
+				// registry.repository cannot be authenticated
+				justpath, err := reference.WithName(reference.Path(name))
+				if err != nil {
+					panic(err)
+				}
+				_, err = distributionclient.NewRepository(justpath, endpoints[0].URL.String(), registry.NewTransport(nil))
+				if err != nil {
+					panic(err)
+				}
+
+				base := &http.Transport{
+					Proxy: http.ProxyFromEnvironment,
+					Dial: (&net.Dialer{
+						Timeout:   30 * time.Second,
+						KeepAlive: 30 * time.Second,
+						DualStack: true,
+					}).Dial,
+					TLSHandshakeTimeout: 10 * time.Second,
+					TLSClientConfig:     endpoints[0].TLSConfig,
+					DisableKeepAlives:   true,
+				}
+				modifiers := []transport.RequestModifier{}
+				// modifiers = append(modifiers, transport.NewHeaderRequestModifier(http.Header{}))
+				authTransport := transport.NewTransport(base, modifiers...)
+				challengeManager, err := PingV2Registry(endpoints[0].URL, authTransport)
+				if err != nil {
+					panic(err)
+				}
+
+				creds := registry.NewStaticCredentialStore(&types.AuthConfig{
+					ServerAddress: "gcr.io",
+					Username:      "_json_key",
+					Password:      string(bytes),
+				})
+				tokenHandler := auth.NewTokenHandler(authTransport, creds, justpath.Name(), "push", "pull")
+				basicHandler := auth.NewBasicHandler(creds)
+
+				// auth.NewAuthorizer(challenge.NewSimpleManager(), auth.NewTokenHandlerWithOptions(auth.TokenHandlerOptions{
+				// 	Transport:   nil,
+				// 	Credentials: nil,
+				// 	ForceOAuth:  true,
+				// 	Logger:      logging.MustGetLogger("gat"),
+				// 	Scopes: []auth.Scope{
+				// 		auth.RepositoryScope{
+				// 			Repository: reference.Path(name),
+				// 			Actions:    []string{"pull", "push"},
+				// 		},
+				// 	},
+				// }
+
+				modifiers = append(modifiers, auth.NewAuthorizer(challengeManager, tokenHandler, basicHandler))
+				authTransport = transport.NewTransport(base, modifiers...)
+				client := &http.Client{Transport: authTransport}
+				ub, err := v2.NewURLBuilderFromString(endpoints[0].URL.String(), false)
+				listURLStr, err := ub.BuildTagsURL(justpath)
+				if err != nil {
+					panic(err)
+				}
+				listURL, err := url.Parse(listURLStr)
+				if err != nil {
+					panic(err)
+				}
+				testUrl := listURL.String()
+				req, err := http.NewRequest("GET", testUrl, nil)
+				if err != nil {
+					panic(err)
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					panic(err)
+				}
+				defer resp.Body.Close()
+				body, err := ioutil.ReadAll(resp.Body)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Println(string(body))
+
+				// if r, ok := name.(reference.NamedTagged); ok {
+				// 	fmt.Println(r.Tag())
+				// }
+				// if canonical, ok := name.(reference.Canonical); ok {
+				// 	fmt.Println(canonical.Digest())
+				// }
+			}
 			return nil
 		},
 	}
@@ -424,11 +586,18 @@ func pushImage(project string, tag string) error {
 			panic(err)
 		}
 	}
+
 	target := filepath.Join("gcr.io", project, tag)
 	err = cli.ImageTag(context.Background(), tag, target)
 	if err != nil {
 		panic(err)
 	}
+
+	if _, err := cli.ImagesPrune(context.Background(),
+		filters.NewArgs(filters.Arg("label", "gat="+tag))); err != nil {
+		panic(err)
+	}
+
 	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 	if err != nil {
 		panic(err)
@@ -460,21 +629,6 @@ func buildImage(project string, tag string) error {
 		panic(err)
 	}
 
-	// evade <none> dangler
-	if images, err := cli.ImageList(context.Background(),
-		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))}); err != nil {
-		panic(err)
-	} else {
-		for _, image := range images {
-			if _, err = cli.ImageRemove(context.Background(), image.ID, types.ImageRemoveOptions{
-				Force:         true,
-				PruneChildren: true,
-			}); err != nil {
-				panic(err)
-			}
-		}
-	}
-
 	// remotecontext.MakeGitRepo(gitURL) clones and tars
 	// say file://./my-repo.git#branch but I need unstaged changes too
 	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{})
@@ -482,7 +636,10 @@ func buildImage(project string, tag string) error {
 		panic(err)
 	}
 	defer buildContext.Close()
-	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{Tags: []string{tag}, ForceRemove: true})
+	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{Tags: []string{tag}, ForceRemove: true,
+		Labels: map[string]string{
+			"gat": tag,
+		}})
 	if err != nil {
 		panic(err)
 	}
