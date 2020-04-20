@@ -12,7 +12,7 @@ import (
 	git "github.com/dickmao/git2go"
 
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v2"
 )
 
 func getRepo(path string) (*git.Repository, error) {

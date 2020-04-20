@@ -4,8 +4,8 @@ import (
 	"io"
 	"os"
 
-	"gat/net/rpc"
-	"gat/net/rpc/jsonrpc"
+	"./gat/net/rpc"
+	"./gat/net/rpc/jsonrpc"
 )
 
 type nullWriter struct {

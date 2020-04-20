@@ -5,7 +5,7 @@
 package jsonrpc
 
 import (
-	"gat/net/rpc"
+	"./gat/net/rpc"
 	"encoding/json"
 	"errors"
 	"io"

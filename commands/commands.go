@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -17,12 +18,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"cloud.google.com/go/storage"
 	git "github.com/dickmao/git2go"
+	"github.com/docker/distribution"
 	"github.com/docker/distribution/reference"
 	v2 "github.com/docker/distribution/registry/api/v2"
-	distributionclient "github.com/docker/distribution/registry/client"
 	"github.com/docker/distribution/registry/client/auth"
 	"github.com/docker/distribution/registry/client/auth/challenge"
 	"github.com/docker/distribution/registry/client/transport"
@@ -33,7 +35,8 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/term"
 	"github.com/docker/docker/registry"
-	"github.com/urfave/cli"
+	digest "github.com/opencontainers/go-digest"
+	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/compute/v1"
@@ -268,6 +271,44 @@ func PingV2Registry(endpoint *url.URL, transport http.RoundTripper) (challenge.M
 	return challengeManager, nil
 }
 
+func descriptorFromResponse(response *http.Response) (distribution.Descriptor, error) {
+	desc := distribution.Descriptor{}
+	headers := response.Header
+
+	ctHeader := headers.Get("Content-Type")
+	if ctHeader == "" {
+		return distribution.Descriptor{}, errors.New("missing or empty Content-Type header")
+	}
+	desc.MediaType = ctHeader
+
+	digestHeader := headers.Get("Docker-Content-Digest")
+	if digestHeader == "" {
+		bytes, err := ioutil.ReadAll(response.Body)
+		if err != nil {
+			return distribution.Descriptor{}, err
+		}
+		_, desc, err := distribution.UnmarshalManifest(ctHeader, bytes)
+		if err != nil {
+			return distribution.Descriptor{}, err
+		}
+		return desc, nil
+	}
+
+	desc.Digest = *(*digest.Digest)(unsafe.Pointer(&digestHeader))
+	lengthHeader := headers.Get("Content-Length")
+	if lengthHeader == "" {
+		return distribution.Descriptor{}, errors.New("missing or empty Content-Length header")
+	}
+	length, err := strconv.ParseInt(lengthHeader, 10, 64)
+	if err != nil {
+		return distribution.Descriptor{}, err
+	}
+	desc.Size = length
+
+	return desc, nil
+
+}
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
@@ -280,128 +321,159 @@ func TestCommand() *cli.Command {
 
 			project := c.String("project")
 			repo := c.Context.Value(repoKey).(*git.Repository)
-			if name, err := reference.WithName(filepath.Join("gcr.io", project, filepath.Base(filepath.Clean(repo.Workdir())))); err != nil {
+			name, err := reference.WithName(filepath.Join("gcr.io", project, filepath.Base(filepath.Clean(repo.Workdir()))))
+			if err != nil {
 				panic(err)
-			} else {
-				repoInfo, err := registry.ParseRepositoryInfo(name)
-				if err != nil {
-					panic(err)
-				}
-				// registryService can only search for stars
-				registryService, err := registry.NewService(registry.ServiceOptions{
-					InsecureRegistries: []string{"gcr.io"},
-				})
-				if err != nil {
-					panic(err)
-				}
-				bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-				if err != nil {
-					panic(err)
-				}
-				if _, _, err := registryService.Auth(context.Background(), &types.AuthConfig{
-					ServerAddress: "gcr.io",
-					Username:      "_json_key",
-					Password:      string(bytes),
-				}, ""); err != nil {
-					panic(err)
-				}
-				endpoints, err := registryService.LookupPushEndpoints(reference.Domain(repoInfo.Name))
-				if err != nil {
-					panic(err)
-				}
-				// Default to the highest priority endpoint to return
-				if !repoInfo.Index.Secure {
-					for _, ep := range endpoints {
-						if ep.URL.Scheme == "http" {
-							endpoints[0] = ep
-						}
+			}
+			repoInfo, err := registry.ParseRepositoryInfo(name)
+			if err != nil {
+				panic(err)
+			}
+			// registryService can only search for stars
+			registryService, err := registry.NewService(registry.ServiceOptions{
+				InsecureRegistries: []string{"gcr.io"},
+			})
+			if err != nil {
+				panic(err)
+			}
+			endpoints, err := registryService.LookupPushEndpoints(reference.Domain(repoInfo.Name))
+			if err != nil {
+				panic(err)
+			}
+			// Default to the highest priority endpoint to return
+			if !repoInfo.Index.Secure {
+				for _, ep := range endpoints {
+					if ep.URL.Scheme == "http" {
+						endpoints[0] = ep
 					}
 				}
-				// registry.repository cannot be authenticated
-				justpath, err := reference.WithName(reference.Path(name))
+			}
+			base := &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				Dial: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+					DualStack: true,
+				}).Dial,
+				TLSHandshakeTimeout: 10 * time.Second,
+				TLSClientConfig:     endpoints[0].TLSConfig,
+				DisableKeepAlives:   true,
+			}
+			authTransport := transport.NewTransport(base)
+			challengeManager, err := PingV2Registry(endpoints[0].URL, authTransport)
+			if err != nil {
+				panic(err)
+			}
+			bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+			if err != nil {
+				panic(err)
+			}
+			creds := registry.NewStaticCredentialStore(&types.AuthConfig{
+				ServerAddress: "gcr.io",
+				Username:      "_json_key",
+				Password:      string(bytes),
+			})
+			justpath, err := reference.WithName(reference.Path(name))
+			if err != nil {
+				panic(err)
+			}
+			tokenHandler := auth.NewTokenHandler(authTransport, creds, justpath.Name(), "push", "pull")
+			basicHandler := auth.NewBasicHandler(creds)
+			authTransport = transport.NewTransport(base, auth.NewAuthorizer(challengeManager, tokenHandler, basicHandler))
+			client := &http.Client{Transport: authTransport}
+			ub, err := v2.NewURLBuilderFromString(endpoints[0].URL.String(), false)
+
+			mfstURLStr, err := ub.BuildManifestURL(justpath)
+			if err != nil {
+				panic(err)
+			}
+
+			newRequest := func(method string) (*http.Response, error) {
+				req, err := http.NewRequest(method, mfstURLStr, nil)
 				if err != nil {
-					panic(err)
-				}
-				_, err = distributionclient.NewRepository(justpath, endpoints[0].URL.String(), registry.NewTransport(nil))
-				if err != nil {
-					panic(err)
+					return nil, err
 				}
 
-				base := &http.Transport{
-					Proxy: http.ProxyFromEnvironment,
-					Dial: (&net.Dialer{
-						Timeout:   30 * time.Second,
-						KeepAlive: 30 * time.Second,
-						DualStack: true,
-					}).Dial,
-					TLSHandshakeTimeout: 10 * time.Second,
-					TLSClientConfig:     endpoints[0].TLSConfig,
-					DisableKeepAlives:   true,
-				}
-				modifiers := []transport.RequestModifier{}
-				// modifiers = append(modifiers, transport.NewHeaderRequestModifier(http.Header{}))
-				authTransport := transport.NewTransport(base, modifiers...)
-				challengeManager, err := PingV2Registry(endpoints[0].URL, authTransport)
-				if err != nil {
-					panic(err)
-				}
-
-				creds := registry.NewStaticCredentialStore(&types.AuthConfig{
-					ServerAddress: "gcr.io",
-					Username:      "_json_key",
-					Password:      string(bytes),
-				})
-				tokenHandler := auth.NewTokenHandler(authTransport, creds, justpath.Name(), "push", "pull")
-				basicHandler := auth.NewBasicHandler(creds)
-
-				// auth.NewAuthorizer(challenge.NewSimpleManager(), auth.NewTokenHandlerWithOptions(auth.TokenHandlerOptions{
-				// 	Transport:   nil,
-				// 	Credentials: nil,
-				// 	ForceOAuth:  true,
-				// 	Logger:      logging.MustGetLogger("gat"),
-				// 	Scopes: []auth.Scope{
-				// 		auth.RepositoryScope{
-				// 			Repository: reference.Path(name),
-				// 			Actions:    []string{"pull", "push"},
-				// 		},
-				// 	},
-				// }
-
-				modifiers = append(modifiers, auth.NewAuthorizer(challengeManager, tokenHandler, basicHandler))
-				authTransport = transport.NewTransport(base, modifiers...)
-				client := &http.Client{Transport: authTransport}
-				ub, err := v2.NewURLBuilderFromString(endpoints[0].URL.String(), false)
-				listURLStr, err := ub.BuildTagsURL(justpath)
-				if err != nil {
-					panic(err)
-				}
-				listURL, err := url.Parse(listURLStr)
-				if err != nil {
-					panic(err)
-				}
-				testUrl := listURL.String()
-				req, err := http.NewRequest("GET", testUrl, nil)
-				if err != nil {
-					panic(err)
+				for _, t := range distribution.ManifestMediaTypes() {
+					req.Header.Add("Accept", t)
 				}
 				resp, err := client.Do(req)
+				return resp, err
+			}
+
+			resp, err := newRequest("HEAD")
+			if err != nil {
+				panic(err)
+			}
+			defer resp.Body.Close()
+			switch {
+			case resp.StatusCode >= 200 && resp.StatusCode < 400 && len(resp.Header.Get("Docker-Content-Digest")) > 0:
+				// if the response is a success AND a Docker-Content-Digest can be retrieved from the headers
+				if desc, err := descriptorFromResponse(resp); err != nil {
+					panic(err)
+				} else {
+					fmt.Println(desc)
+				}
+			default:
+				// if the response is an error - there will be no body to decode.
+				// Issue a GET request:
+				//   - for data from a server that does not handle HEAD
+				//   - to get error details in case of a failure
+				resp, err = newRequest("GET")
 				if err != nil {
 					panic(err)
 				}
 				defer resp.Body.Close()
-				body, err := ioutil.ReadAll(resp.Body)
-				if err != nil {
-					panic(err)
+				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+					if desc, err := descriptorFromResponse(resp); err != nil {
+						panic(err)
+					} else {
+						fmt.Println(desc)
+					}
 				}
-				fmt.Println(string(body))
-
-				// if r, ok := name.(reference.NamedTagged); ok {
-				// 	fmt.Println(r.Tag())
-				// }
-				// if canonical, ok := name.(reference.Canonical); ok {
-				// 	fmt.Println(canonical.Digest())
-				// }
 			}
+
+			// listURLStr, err := ub.BuildTagsURL(justpath)
+			// if err != nil {
+			// 	panic(err)
+			// }
+			// listURL, err := url.Parse(listURLStr)
+			// if err != nil {
+			// 	panic(err)
+			// }
+			// var tags []string
+			// for {
+			// 	resp, err := client.Get(listURL.String())
+			// 	if err != nil {
+			// 		panic(err)
+			// 	}
+			// 	defer resp.Body.Close()
+			// 	if distributionclient.SuccessStatus(resp.StatusCode) {
+			// 		b, err := ioutil.ReadAll(resp.Body)
+			// 		if err != nil {
+			// 			panic(err)
+			// 		}
+			// 		tagsResponse := struct {
+			// 			Tags []string `json:"tags"`
+			// 		}{}
+			// 		if err := json.Unmarshal(b, &tagsResponse); err != nil {
+			// 			panic(err)
+			// 		}
+			// 		tags = append(tags, tagsResponse.Tags...)
+			// 		if link := resp.Header.Get("Link"); link != "" {
+			// 			linkURLStr := strings.Trim(strings.Split(link, ";")[0], "<>")
+			// 			linkURL, err := url.Parse(linkURLStr)
+			// 			if err != nil {
+			// 				panic(err)
+			// 			}
+
+			// 			listURL = listURL.ResolveReference(linkURL)
+			// 			continue
+			// 		}
+			// 	}
+			// 	break
+			// }
+			// fmt.Println(tags)
 			return nil
 		},
 	}
