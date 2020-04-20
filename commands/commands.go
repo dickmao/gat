@@ -25,6 +25,7 @@ import (
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/reference"
 	v2 "github.com/docker/distribution/registry/api/v2"
+	distributionclient "github.com/docker/distribution/registry/client"
 	"github.com/docker/distribution/registry/client/auth"
 	"github.com/docker/distribution/registry/client/auth/challenge"
 	"github.com/docker/distribution/registry/client/transport"
@@ -229,14 +230,18 @@ func getBranchRepo(c *cli.Context) *git.Repository {
 	return branch_repo
 }
 
-func constructTag(c *cli.Context) string {
+func branchReference(c *cli.Context) (*git.Reference, error) {
 	branch_repo := getBranchRepo(c)
 	head, err := branch_repo.Head()
 	if err != nil {
 		panic(err)
 	}
 	defer head.Free()
-	ref, err := head.Resolve()
+	return head.Resolve()
+}
+
+func constructTag(c *cli.Context) string {
+	ref, err := branchReference(c)
 	if err != nil {
 		panic(err)
 	}
@@ -348,6 +353,7 @@ func TestCommand() *cli.Command {
 					}
 				}
 			}
+
 			base := &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 				Dial: (&net.Dialer{
@@ -382,55 +388,54 @@ func TestCommand() *cli.Command {
 			authTransport = transport.NewTransport(base, auth.NewAuthorizer(challengeManager, tokenHandler, basicHandler))
 			client := &http.Client{Transport: authTransport}
 			ub, err := v2.NewURLBuilderFromString(endpoints[0].URL.String(), false)
-
-			mfstURLStr, err := ub.BuildManifestURL(justpath)
+			ref, err := branchReference(c)
+			if err != nil {
+				panic(err)
+			}
+			tag, err := reference.WithTag(justpath, ref.Shorthand())
 			if err != nil {
 				panic(err)
 			}
 
+			mfstURLStr, err := ub.BuildManifestURL(tag)
+			if err != nil {
+				panic(err)
+			}
 			newRequest := func(method string) (*http.Response, error) {
 				req, err := http.NewRequest(method, mfstURLStr, nil)
 				if err != nil {
 					return nil, err
 				}
-
 				for _, t := range distribution.ManifestMediaTypes() {
 					req.Header.Add("Accept", t)
 				}
 				resp, err := client.Do(req)
 				return resp, err
 			}
-
-			resp, err := newRequest("HEAD")
+			resp, err := newRequest("GET")
 			if err != nil {
 				panic(err)
 			}
 			defer resp.Body.Close()
-			switch {
-			case resp.StatusCode >= 200 && resp.StatusCode < 400 && len(resp.Header.Get("Docker-Content-Digest")) > 0:
-				// if the response is a success AND a Docker-Content-Digest can be retrieved from the headers
-				if desc, err := descriptorFromResponse(resp); err != nil {
-					panic(err)
-				} else {
-					fmt.Println(desc)
-				}
-			default:
-				// if the response is an error - there will be no body to decode.
-				// Issue a GET request:
-				//   - for data from a server that does not handle HEAD
-				//   - to get error details in case of a failure
-				resp, err = newRequest("GET")
+			if distributionclient.SuccessStatus(resp.StatusCode) {
+				mt := resp.Header.Get("Content-Type")
+				body, err := ioutil.ReadAll(resp.Body)
 				if err != nil {
 					panic(err)
 				}
-				defer resp.Body.Close()
-				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-					if desc, err := descriptorFromResponse(resp); err != nil {
-						panic(err)
-					} else {
-						fmt.Println(desc)
-					}
+				// tagsResponse := struct {
+				// 	string `json:"digest"`
+				// }{}
+				var f interface{}
+				if err := json.Unmarshal(body, &f); err != nil {
+					panic(err)
 				}
+				// fmt.Println(mt, f.(map[string]interface{}))
+				m, _, err := distribution.UnmarshalManifest(mt, body)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Println(m)
 			}
 
 			// listURLStr, err := ub.BuildTagsURL(justpath)
