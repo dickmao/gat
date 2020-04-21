@@ -36,7 +36,8 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/term"
 	"github.com/docker/docker/registry"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/mitchellh/mapstructure"
+	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudresourcemanager/v1"
@@ -46,6 +47,15 @@ import (
 	"google.golang.org/api/iam/v1"
 	"google.golang.org/api/option"
 )
+
+type digest struct {
+	ImageSizeBytes string   `mapstructure:"imageSizeBytes"`
+	LayerId        string   `mapstructure:"layerId"`
+	MediaType      string   `mapstructure:"mediaType"`
+	Tag            []string `mapstructure:"tag"`
+	TimeCreatedMs  string   `mapstructure:"timeCreatedMs"`
+	TimeUploadedMs string   `mapstructure:"timeUploadedMs"`
+}
 
 type wrapper struct {
 	context.Context
@@ -299,7 +309,7 @@ func descriptorFromResponse(response *http.Response) (distribution.Descriptor, e
 		return desc, nil
 	}
 
-	desc.Digest = *(*digest.Digest)(unsafe.Pointer(&digestHeader))
+	desc.Digest = *(*godigest.Digest)(unsafe.Pointer(&digestHeader))
 	lengthHeader := headers.Get("Content-Length")
 	if lengthHeader == "" {
 		return distribution.Descriptor{}, errors.New("missing or empty Content-Length header")
@@ -388,97 +398,55 @@ func TestCommand() *cli.Command {
 			authTransport = transport.NewTransport(base, auth.NewAuthorizer(challengeManager, tokenHandler, basicHandler))
 			client := &http.Client{Transport: authTransport}
 			ub, err := v2.NewURLBuilderFromString(endpoints[0].URL.String(), false)
-			ref, err := branchReference(c)
+			listURLStr, err := ub.BuildTagsURL(justpath)
 			if err != nil {
 				panic(err)
 			}
-			tag, err := reference.WithTag(justpath, ref.Shorthand())
+			listURL, err := url.Parse(listURLStr)
 			if err != nil {
 				panic(err)
 			}
-
-			mfstURLStr, err := ub.BuildManifestURL(tag)
-			if err != nil {
-				panic(err)
-			}
-			newRequest := func(method string) (*http.Response, error) {
-				req, err := http.NewRequest(method, mfstURLStr, nil)
-				if err != nil {
-					return nil, err
-				}
-				for _, t := range distribution.ManifestMediaTypes() {
-					req.Header.Add("Accept", t)
-				}
-				resp, err := client.Do(req)
-				return resp, err
-			}
-			resp, err := newRequest("GET")
-			if err != nil {
-				panic(err)
-			}
-			defer resp.Body.Close()
-			if distributionclient.SuccessStatus(resp.StatusCode) {
-				mt := resp.Header.Get("Content-Type")
-				body, err := ioutil.ReadAll(resp.Body)
+			var digests []digest
+			for {
+				resp, err := client.Get(listURL.String())
 				if err != nil {
 					panic(err)
 				}
-				// tagsResponse := struct {
-				// 	string `json:"digest"`
-				// }{}
-				var f interface{}
-				if err := json.Unmarshal(body, &f); err != nil {
-					panic(err)
+				defer resp.Body.Close()
+				if distributionclient.SuccessStatus(resp.StatusCode) {
+					b, err := ioutil.ReadAll(resp.Body)
+					if err != nil {
+						panic(err)
+					}
+					digestsResponse := struct {
+						Digest map[string]interface{} `json:"manifest"`
+					}{}
+					if err := json.Unmarshal(b, &digestsResponse); err != nil {
+						panic(err)
+					}
+					for key, value := range digestsResponse.Digest {
+						fmt.Println(key)
+						var d digest
+						err = mapstructure.Decode(value, &d)
+						if err != nil {
+							panic(err)
+						}
+						digests = append(digests, d)
+					}
+					if link := resp.Header.Get("Link"); link != "" {
+						linkURLStr := strings.Trim(strings.Split(link, ";")[0], "<>")
+						linkURL, err := url.Parse(linkURLStr)
+						if err != nil {
+							panic(err)
+						}
+
+						listURL = listURL.ResolveReference(linkURL)
+						continue
+					}
 				}
-				// fmt.Println(mt, f.(map[string]interface{}))
-				m, _, err := distribution.UnmarshalManifest(mt, body)
-				if err != nil {
-					panic(err)
-				}
-				fmt.Println(m)
+				break
 			}
-
-			// listURLStr, err := ub.BuildTagsURL(justpath)
-			// if err != nil {
-			// 	panic(err)
-			// }
-			// listURL, err := url.Parse(listURLStr)
-			// if err != nil {
-			// 	panic(err)
-			// }
-			// var tags []string
-			// for {
-			// 	resp, err := client.Get(listURL.String())
-			// 	if err != nil {
-			// 		panic(err)
-			// 	}
-			// 	defer resp.Body.Close()
-			// 	if distributionclient.SuccessStatus(resp.StatusCode) {
-			// 		b, err := ioutil.ReadAll(resp.Body)
-			// 		if err != nil {
-			// 			panic(err)
-			// 		}
-			// 		tagsResponse := struct {
-			// 			Tags []string `json:"tags"`
-			// 		}{}
-			// 		if err := json.Unmarshal(b, &tagsResponse); err != nil {
-			// 			panic(err)
-			// 		}
-			// 		tags = append(tags, tagsResponse.Tags...)
-			// 		if link := resp.Header.Get("Link"); link != "" {
-			// 			linkURLStr := strings.Trim(strings.Split(link, ";")[0], "<>")
-			// 			linkURL, err := url.Parse(linkURLStr)
-			// 			if err != nil {
-			// 				panic(err)
-			// 			}
-
-			// 			listURL = listURL.ResolveReference(linkURL)
-			// 			continue
-			// 		}
-			// 	}
-			// 	break
-			// }
-			// fmt.Println(tags)
+			fmt.Println(digests)
 			return nil
 		},
 	}
