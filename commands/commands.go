@@ -36,7 +36,6 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/term"
 	"github.com/docker/docker/registry"
-	"github.com/mitchellh/mapstructure"
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
@@ -49,12 +48,12 @@ import (
 )
 
 type digest struct {
-	ImageSizeBytes string   `mapstructure:"imageSizeBytes"`
-	LayerId        string   `mapstructure:"layerId"`
-	MediaType      string   `mapstructure:"mediaType"`
-	Tag            []string `mapstructure:"tag"`
-	TimeCreatedMs  string   `mapstructure:"timeCreatedMs"`
-	TimeUploadedMs string   `mapstructure:"timeUploadedMs"`
+	// ImageSizeBytes string   `json:"imageSizeBytes"`
+	// LayerId        string   `json:"layerId"`
+	// MediaType      string   `json:"mediaType"`
+	Tags []string `json:"tag"`
+	// TimeCreatedMs  string   `json:"timeCreatedMs"`
+	// TimeUploadedMs string   `json:"timeUploadedMs"`
 }
 
 type wrapper struct {
@@ -406,7 +405,8 @@ func TestCommand() *cli.Command {
 			if err != nil {
 				panic(err)
 			}
-			var digests []digest
+			var digestToDelete string
+		done:
 			for {
 				resp, err := client.Get(listURL.String())
 				if err != nil {
@@ -419,19 +419,23 @@ func TestCommand() *cli.Command {
 						panic(err)
 					}
 					digestsResponse := struct {
-						Digest map[string]interface{} `json:"manifest"`
+						Digest map[string]digest `json:"manifest"`
 					}{}
 					if err := json.Unmarshal(b, &digestsResponse); err != nil {
 						panic(err)
 					}
-					for key, value := range digestsResponse.Digest {
-						fmt.Println(key)
-						var d digest
-						err = mapstructure.Decode(value, &d)
-						if err != nil {
-							panic(err)
+					ref, err := branchReference(c)
+					if err != nil {
+						panic(err)
+					}
+					defer ref.Free()
+					for sha1, dig := range digestsResponse.Digest {
+						for _, tag := range dig.Tags {
+							if tag == ref.Shorthand() {
+								digestToDelete = sha1
+								break done
+							}
 						}
-						digests = append(digests, d)
 					}
 					if link := resp.Header.Get("Link"); link != "" {
 						linkURLStr := strings.Trim(strings.Split(link, ";")[0], "<>")
@@ -446,7 +450,7 @@ func TestCommand() *cli.Command {
 				}
 				break
 			}
-			fmt.Println(digests)
+			fmt.Println(digestToDelete)
 			return nil
 		},
 	}
