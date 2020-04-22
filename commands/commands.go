@@ -50,8 +50,8 @@ import (
 type digest struct {
 	// ImageSizeBytes string   `json:"imageSizeBytes"`
 	// LayerId        string   `json:"layerId"`
-	// MediaType      string   `json:"mediaType"`
-	Tags []string `json:"tag"`
+	MediaType string   `json:"mediaType"`
+	Tags      []string `json:"tag"`
 	// TimeCreatedMs  string   `json:"timeCreatedMs"`
 	// TimeUploadedMs string   `json:"timeUploadedMs"`
 }
@@ -332,7 +332,6 @@ func TestCommand() *cli.Command {
 			if err := ensureBucket(c); err != nil {
 				panic(err)
 			}
-
 			project := c.String("project")
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			name, err := reference.WithName(filepath.Join("gcr.io", project, filepath.Base(filepath.Clean(repo.Workdir()))))
@@ -383,6 +382,7 @@ func TestCommand() *cli.Command {
 			if err != nil {
 				panic(err)
 			}
+
 			creds := registry.NewStaticCredentialStore(&types.AuthConfig{
 				ServerAddress: "gcr.io",
 				Username:      "_json_key",
@@ -405,7 +405,15 @@ func TestCommand() *cli.Command {
 			if err != nil {
 				panic(err)
 			}
-			var digestToDelete string
+			ref, err := branchReference(c)
+			if err != nil {
+				panic(err)
+			}
+			defer ref.Free()
+
+			branch := ref.Shorthand()
+			var digestToDelete digest
+			var shaToDelete string
 		done:
 			for {
 				resp, err := client.Get(listURL.String())
@@ -424,15 +432,11 @@ func TestCommand() *cli.Command {
 					if err := json.Unmarshal(b, &digestsResponse); err != nil {
 						panic(err)
 					}
-					ref, err := branchReference(c)
-					if err != nil {
-						panic(err)
-					}
-					defer ref.Free()
-					for sha1, dig := range digestsResponse.Digest {
+					for sha, dig := range digestsResponse.Digest {
 						for _, tag := range dig.Tags {
-							if tag == ref.Shorthand() {
-								digestToDelete = sha1
+							if tag == branch {
+								digestToDelete = dig
+								shaToDelete = sha
 								break done
 							}
 						}
@@ -450,7 +454,49 @@ func TestCommand() *cli.Command {
 				}
 				break
 			}
-			fmt.Println(digestToDelete)
+			if len(shaToDelete) > 0 {
+				// cannot authenticate distributionclient.NewRepository
+				repo, err := distributionclient.NewRepository(justpath, endpoints[0].URL.String(), registry.NewTransport(nil))
+				if err != nil {
+					panic(err)
+				}
+				ctx := context.Background()
+				ms, err := repo.Manifests(ctx)
+				if err != nil {
+					panic(err)
+				}
+				if err = ms.Delete(ctx, *(*godigest.Digest)(unsafe.Pointer(&shaToDelete))); err == nil {
+					panic("odd")
+				}
+				dig, err := reference.WithDigest(justpath, *(*godigest.Digest)(unsafe.Pointer(&shaToDelete)))
+				if err != nil {
+					panic(err)
+				}
+				mfstURLStr, err := ub.BuildManifestURL(dig)
+				if err != nil {
+					panic(err)
+				}
+				// fmt.Printf("%T %#v", mfstURLStr, mfstURLStr)
+				url, err := url.Parse(mfstURLStr)
+				if err != nil {
+					panic(err)
+				}
+				justdig, err := godigest.Parse(filepath.Base(url.Path))
+				if err != nil {
+					panic(err)
+				}
+				url.Path = filepath.Join(filepath.Dir(url.Path), justdig.Encoded())
+				req, err := http.NewRequest(http.MethodDelete, url.String(), nil)
+				if err != nil {
+					panic(err)
+				}
+				req.Header.Add("Accept", digestToDelete.MediaType)
+				resp, err := client.Do(req)
+				if err != nil {
+					panic(err)
+				}
+				defer resp.Body.Close()
+			}
 			return nil
 		},
 	}
