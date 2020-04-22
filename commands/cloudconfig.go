@@ -55,7 +55,7 @@ write_files:
     ExecStart=/usr/bin/docker run --privileged --name gat-run-container gat-sentinel
     ExecStart=/bin/bash -c "/usr/bin/docker commit gat-run-container gat-run"
     ExecStart=/usr/bin/docker rm gat-run-container
-    ExecStart=/usr/bin/docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/\.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./service-account.json) rsync -r results gs://{{ .Bucket }}/results"
+    ExecStart=/usr/bin/docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./service-account.json) rsync -r results gs://{{ .Bucket }}/results"
 
 - path: /etc/systemd/system/shutdown.service
   permissions: 0644

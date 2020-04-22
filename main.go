@@ -60,6 +60,7 @@ func main() {
 	}
 	app.Commands = []*cli.Command{
 		commands.CreateCommand(),
+		commands.RegistryCommand(),
 		commands.TestCommand(),
 		commands.RunRemoteCommand(),
 		commands.RunLocalCommand(),

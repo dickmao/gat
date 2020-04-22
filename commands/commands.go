@@ -36,6 +36,10 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/term"
 	"github.com/docker/docker/registry"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
@@ -75,10 +79,12 @@ var (
 	computeService             *compute.Service
 	containerService           *container.Service
 	storageClient              *storage.Client
+	myAuthn                    *authn.Basic
 	resourceManagerServiceOnce sync.Once
 	computeServiceOnce         sync.Once
 	containerServiceOnce       sync.Once
 	storageClientOnce          sync.Once
+	myAuthnOnce                sync.Once
 )
 
 type ServiceAccount struct {
@@ -169,6 +175,18 @@ func getClientStorage() *storage.Client {
 		}
 	})
 	return storageClient
+}
+
+func getMyAuthn() *authn.Basic {
+	myAuthnOnce.Do(func() {
+		ensureApplicationDefaultCredentials()
+		bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+		if err != nil {
+			panic(err)
+		}
+		myAuthn = &authn.Basic{Username: "_json_key", Password: string(bytes)}
+	})
+	return myAuthn
 }
 
 func getServiceResourceManager() *cloudresourcemanager.Service {
@@ -320,12 +338,40 @@ func descriptorFromResponse(response *http.Response) (distribution.Descriptor, e
 	desc.Size = length
 
 	return desc, nil
+}
 
+func getImage(project string, tag string) v1.Image {
+	refTag, err := name.ParseReference(filepath.Join("gcr.io", project, tag))
+	if err != nil {
+		panic(err)
+	}
+	img, _ := remote.Image(refTag, remote.WithAuth(getMyAuthn()))
+	return img
+}
+
+func deleteImage(project string, tag string, digest v1.Hash) error {
+	refDig, err := name.ParseReference(filepath.Join("gcr.io", project, tag[:strings.IndexByte(tag, ':')]+"@"+digest.String()))
+	if err != nil {
+		panic(err)
+	}
+	if err = remote.Delete(refDig, remote.WithAuth(getMyAuthn())); err != nil {
+		panic(err)
+	}
+	return nil
 }
 
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
+		Action: func(c *cli.Context) error {
+			return nil
+		},
+	}
+}
+
+func RegistryCommand() *cli.Command {
+	return &cli.Command{
+		Name: "registry",
 		Action: func(c *cli.Context) error {
 			// project := c.String("project")
 			// repo := c.Context.Value(repoKey).(*git.Repository)
@@ -496,6 +542,19 @@ func TestCommand() *cli.Command {
 					panic(err)
 				}
 				defer resp.Body.Close()
+				if distributionclient.SuccessStatus(resp.StatusCode) {
+					b, err := ioutil.ReadAll(resp.Body)
+					if err != nil {
+						panic(err)
+					}
+					deleteResponse := struct {
+						Errors []string `json:"errors"`
+					}{}
+					if err := json.Unmarshal(b, &deleteResponse); err != nil {
+						panic(err)
+					}
+					fmt.Printf("%#v, %#v", string(b), deleteResponse.Errors)
+				}
 			}
 			return nil
 		},
@@ -529,8 +588,20 @@ func PushCommand() *cli.Command {
 				[]string{c.App.Name, "--project", project, "--zone", zone, "build"}); err != nil {
 				panic(err)
 			}
+			var oldDigest, newDigest v1.Hash
+			if oldImage := getImage(project, constructTag(c)); oldImage != nil {
+				oldDigest, _ = oldImage.Digest()
+			}
 			if err := pushImage(project, constructTag(c)); err != nil {
 				panic(err)
+			}
+			if newImage := getImage(project, constructTag(c)); newImage != nil {
+				newDigest, _ = newImage.Digest()
+			}
+			if len(oldDigest.String()) > 0 && oldDigest.String() != newDigest.String() {
+				if err := deleteImage(project, constructTag(c), oldDigest); err != nil {
+					panic(err)
+				}
 			}
 			return nil
 		},
@@ -661,6 +732,10 @@ func RunLocalCommand() *cli.Command {
 			// docker -v dirname(GOOGLE_APPLICATION_CREDENTIALS):/stash --rm --entrypoint "/bin/cp" tag -c "/stash/basename(GOOGLE_APPLICATION_CREDENTIALS) ."
 			// docker commit carcass to-run
 			// docker run --privileged --rm to-run
+
+			if err = ensureBucket(c); err != nil {
+				panic(err)
+			}
 
 			return nil
 		},
