@@ -69,8 +69,7 @@ write_files:
     Environment="HOME=/var/tmp"
     WorkingDirectory=/var/tmp
     Type=oneshot
-    ExecStart=/usr/bin/docker pull stedolan/jq
-    ExecStart=/bin/bash -c "curl -s --retry 2 -H \"Authorization: Bearer $(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/$(cat /var/tmp/service-account.json | /usr/bin/docker run --rm -i stedolan/jq -rc '.client_email')/token -H 'Metadata-Flavor: Google' | /usr/bin/docker run --rm -i stedolan/jq -rc '.access_token')\" -X DELETE https://compute.googleapis.com/compute/v1/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')/instances/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/id -H 'Metadata-Flavor: Google')"
+    ExecStart=/bin/bash -c "curl -s --retry 2 -H \"Authorization: Bearer $(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/$(cat /var/tmp/service-account.json | jq -r -c '.client_email')/token -H 'Metadata-Flavor: Google' | jq -r -c '.access_token')\" -X DELETE https://compute.googleapis.com/compute/v1/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')/instances/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/id -H 'Metadata-Flavor: Google')"
 
 runcmd:
 - systemctl daemon-reload

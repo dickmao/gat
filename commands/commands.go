@@ -671,8 +671,8 @@ func RunRemoteCommand() *cli.Command {
 						Boot:       true,
 						Type:       "PERSISTENT",
 						InitializeParams: &compute.AttachedDiskInitializeParams{
-
-							SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
+							// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
+							SourceImage: "projects/api-project-421333809285/global/images/cos-81-12871-96-202004291659",
 						},
 					},
 				},
