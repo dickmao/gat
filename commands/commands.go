@@ -610,7 +610,8 @@ func PushCommand() *cli.Command {
 
 func RunRemoteCommand() *cli.Command {
 	return &cli.Command{
-		Name: "run-remote",
+		Name:  "run-remote",
+		Flags: runRemoteFlags(),
 		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
@@ -642,7 +643,7 @@ func RunRemoteCommand() *cli.Command {
 			modifier_escaped := strings.Replace(quoted_escaped[1:len(quoted_escaped)-1], "%", "%%", -1)
 			newline_escaped := strings.Replace(modifier_escaped, "\\\\n", "\\\\\\\\n", -1)
 			cloudconfig := CloudConfig{project, constructTag(c), gatId(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped}
-			user_data := UserData(cloudconfig)
+			user_data := UserData(cloudconfig, c)
 			shutdown_script := Shutdown(cloudconfig)
 			var serviceAccount ServiceAccount
 			json.Unmarshal(bytes, &serviceAccount)
@@ -1203,6 +1204,15 @@ func editFlags() []cli.Flag {
 			Name:    "cpuprofile",
 			Usage:   "write cpu profile to file",
 			EnvVars: []string{"CPU_PROFILE"},
+		},
+	}
+}
+
+func runRemoteFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "noshutdown",
+			Usage: "do not execute shutdown.service",
 		},
 	}
 }
