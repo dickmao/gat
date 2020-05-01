@@ -729,10 +729,7 @@ func RunLocalCommand() *cli.Command {
 			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 			config1.SetString("gat.last_project", project)
 
-			// would use docker cp but won't know WORKDIR
-			// docker -v dirname(GOOGLE_APPLICATION_CREDENTIALS):/stash --rm --entrypoint "/bin/cp" tag -c "/stash/basename(GOOGLE_APPLICATION_CREDENTIALS) ."
-			// docker commit carcass to-run
-			// docker run --privileged --rm to-run
+			// docker cp to $(docker inspect config.WorkingDir)
 
 			if err = ensureBucket(c); err != nil {
 				panic(err)
