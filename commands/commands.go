@@ -743,27 +743,33 @@ func RunLocalCommand() *cli.Command {
 			scommands := DockerCommands(c, project, constructTag(c), gatId(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped, filepath.Dir(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
 
 			commands := strings.Split(scommands, "\n")
+			type runError struct {
+				error
+				output []byte
+			}
 			defer func() {
 				if r := recover(); r != nil {
 					for _, str := range commands {
 						if strings.Contains(str, "docker rm") {
-							sw, err := shellwords.Parse(str)
-							if err != nil {
+							if sw, err := shellwords.Parse(str); err == nil {
 								exec.Command(sw[0], sw[1:]...).Run()
 							}
 						}
 					}
+					if runerr, ok := r.(runError); ok {
+						fmt.Printf("%s\n", string(runerr.output))
+					}
+					panic(r)
 				}
 			}()
 			for _, str := range commands {
-				sw, err := shellwords.Parse(str)
-				if err != nil {
+				if sw, err := shellwords.Parse(str); err != nil {
 					panic(err)
-				}
-				cmd := exec.Command(sw[0], sw[1:]...)
-				err = cmd.Run()
-				if err != nil {
-					panic(err)
+				} else if len(sw) > 0 {
+					cmd := exec.Command(sw[0], sw[1:]...)
+					if output, err := cmd.CombinedOutput(); err != nil {
+						panic(runError{err, output})
+					}
 				}
 			}
 			return nil

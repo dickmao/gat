@@ -29,9 +29,9 @@ var (
 		`bash -c "docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --name gat-run-container gat-sentinel"`,
 		`docker commit gat-run-container gat-run`,
 		`docker rm gat-run-container`,
+		`docker rmi gat-sentinel`,
 		`docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./$(basename {{ .ServiceAccountJson }})) rsync -r results gs://{{ .Bucket }}/results"`,
 		`docker rmi gat-run`,
-		`docker rmi gat-sentinel`,
 	}
 )
 
@@ -102,7 +102,10 @@ write_files:
 
 func DockerCommands(c *cli.Context, project string, tag string, bucket string, serviceAccountJson string, serviceAccountJsonContent string, workdir string) string {
 	// double evaluation: could not get template {{block}} {{end}} to work.
-	commands := `{{ range .Gat0 }}{{ . | printf "%s\n" }}{{ end }}{{ range .Gat1 }}{{ . | printf "%s\n" }}{{ end }}`
+	commands := `
+{{ range .Gat0 }}{{ . | printf "%s\n" }}{{ end }}
+{{ range .Gat1 }}{{ . | printf "%s\n" }}{{ end }}
+`
 	for i := 0; i < 2; i++ {
 		t := template.Must(template.New("CloudConfig").Parse(commands))
 		var buf bytes.Buffer
