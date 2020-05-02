@@ -14,10 +14,39 @@ type CloudConfig struct {
 	Bucket                    string
 	ServiceAccountJson        string
 	ServiceAccountJsonContent string
+	Workdir                   string
+	Gat0, Gat1                []string
 }
 
-func UserData(config CloudConfig, c *cli.Context) string {
-	templ := `
+var (
+	gat0 = []string{
+		`bash -c "docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container {{ .Tag }} -c \"touch sentinel\""`,
+		`bash -c "docker cp {{ .ServiceAccountJson }} gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/"`,
+	}
+	gat1 = []string{
+		`bash -c "docker commit -c \"ENTRYPOINT $(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }})\" -c \"CMD $(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }})\" gat-sentinel-container gat-sentinel"`,
+		`docker rm gat-sentinel-container`,
+		`bash -c "docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --name gat-run-container gat-sentinel"`,
+		`docker commit gat-run-container gat-run`,
+		`docker rm gat-run-container`,
+		`docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./$(basename {{ .ServiceAccountJson }})) rsync -r results gs://{{ .Bucket }}/results"`,
+		`docker rmi gat-run`,
+		`docker rmi gat-sentinel`,
+	}
+)
+
+// import "os"
+// import "text/template"
+// type localConfig struct {
+//     Gat0[] string
+//     Gat1[] string
+//     Redouble string
+// }
+// t, _ := template.New("gomacro").Parse(`{{range .Gat1}}{{block "inner" .}}{{.}}{{end}}{{template "inner" .}}{{end}}`)
+// t, _ := template.New("gomacro").Parse(`{{range .Gat1}}{{with .}}{{. | printf "%s\n" }}{{end}}{{ $.Redouble | printf "%s\n" }}{{end}}`)
+// _ = t.Execute(os.Stdout, localConfig{ []string{"foo", "bar"}, []string{"baz {{ $.Redouble }}", "qux"}, "doubled" })
+
+const templ string = `
 #cloud-config
 
 users:
@@ -32,14 +61,14 @@ write_files:
     Description=Write service account json
 
     [Service]
-    Environment="HOME=/var/tmp"
-    WorkingDirectory=/var/tmp
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
     Type=oneshot
-    ExecStart=/bin/bash -c "echo $'{{ .ServiceAccountJsonContent }}' >$(basename {{ .ServiceAccountJson }})"
+    ExecStart=bash -c "echo $'{{ .ServiceAccountJsonContent }}' >$(basename {{ .ServiceAccountJson }}) && chmod 664 $(basename {{ .ServiceAccountJson }})"
     ExecStart=/usr/bin/docker-credential-gcr configure-docker
     ExecStart=/usr/bin/docker pull gcr.io/{{ .Project }}/{{ .Tag }}
     ExecStart=/usr/bin/docker tag gcr.io/{{ .Project }}/{{ .Tag }} {{ .Tag }}
-    ExecStart=/bin/bash -c "/usr/bin/docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container -v $(pwd):/hosthome {{ .Tag }} -c \"cp /hosthome/$(basename {{ .ServiceAccountJson }}) . && chmod 600 ./$(basename {{ .ServiceAccountJson }}) && touch sentinel\""
+{{ range .Gat0 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
 
 - path: /etc/systemd/system/gat1.service
   permissions: 0644
@@ -50,15 +79,10 @@ write_files:
     After=gat0.service
 
     [Service]
-    Environment="HOME=/var/tmp"
-    WorkingDirectory=/var/tmp
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
     Type=oneshot
-    ExecStart=/bin/bash -c "/usr/bin/docker commit -c \"ENTRYPOINT $(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }})\" -c \"CMD $(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }})\" gat-sentinel-container gat-sentinel"
-    ExecStart=/usr/bin/docker rm gat-sentinel-container
-    ExecStart=/bin/bash -c "/usr/bin/docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/service-account.json --privileged --name gat-run-container gat-sentinel"
-    ExecStart=/bin/bash -c "/usr/bin/docker commit gat-run-container gat-run"
-    ExecStart=/usr/bin/docker rm gat-run-container
-    ExecStart=/usr/bin/docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./service-account.json) rsync -r results gs://{{ .Bucket }}/results"
+{{ range .Gat1 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
 
 - path: /etc/systemd/system/shutdown.service
   permissions: 0644
@@ -69,29 +93,68 @@ write_files:
     After=gat1.service
 
     [Service]
-    Environment="HOME=/var/tmp"
-    WorkingDirectory=/var/tmp
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
     Type=oneshot
-    ExecStart=/bin/bash -c "curl -s --retry 2 -H \"Authorization: Bearer $(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/$(cat /var/tmp/service-account.json | jq -r -c '.client_email')/token -H 'Metadata-Flavor: Google' | jq -r -c '.access_token')\" -X DELETE https://compute.googleapis.com/compute/v1/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')/instances/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/id -H 'Metadata-Flavor: Google')"
+    ExecStart=bash -c "curl -s --retry 2 -H \"Authorization: Bearer $(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/$(cat {{ .Workdir }}/$(basename {{ .ServiceAccountJson }}) | jq -r -c '.client_email')/token -H 'Metadata-Flavor: Google' | jq -r -c '.access_token')\" -X DELETE https://compute.googleapis.com/compute/v1/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')/instances/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/id -H 'Metadata-Flavor: Google')"
 
 `
+
+func DockerCommands(c *cli.Context, project string, tag string, bucket string, serviceAccountJson string, serviceAccountJsonContent string, workdir string) string {
+	// double evaluation: could not get template {{block}} {{end}} to work.
+	commands := `{{ range .Gat0 }}{{ . | printf "%s\n" }}{{ end }}{{ range .Gat1 }}{{ . | printf "%s\n" }}{{ end }}`
+	for i := 0; i < 2; i++ {
+		t := template.Must(template.New("CloudConfig").Parse(commands))
+		var buf bytes.Buffer
+		if err := t.Execute(&buf, CloudConfig{
+			Project:                   project,
+			Tag:                       tag,
+			Bucket:                    bucket,
+			ServiceAccountJson:        serviceAccountJson,
+			ServiceAccountJsonContent: serviceAccountJsonContent,
+			Workdir:                   workdir,
+			Gat0:                      gat0,
+			Gat1:                      gat1,
+		}); err != nil {
+			panic(err)
+		}
+		commands = buf.String()
+	}
+	return commands
+}
+
+func UserData(c *cli.Context, project string, tag string, bucket string, serviceAccountJson string, serviceAccountJsonContent string, workdir string) string {
 	runcmd := []string{"daemon-reload", "start gat0.service", "start gat1.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}
-	templ += "runcmd:\n"
+	userdata := templ
+	userdata += "runcmd:\n"
 	for _, value := range runcmd {
-		templ += fmt.Sprintf("- systemctl %s\n", value)
+		userdata += fmt.Sprintf("- systemctl %s\n", value)
 	}
-	t := template.Must(template.New("cloudConfig").Parse(templ))
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, config); err != nil {
-		panic(err)
+	// double evaluation: could not get template {{block}} {{end}} to work.
+	for i := 0; i < 2; i++ {
+		t := template.Must(template.New("CloudConfig").Parse(userdata))
+		var buf bytes.Buffer
+		if err := t.Execute(&buf, CloudConfig{
+			Project:                   project,
+			Tag:                       tag,
+			Bucket:                    bucket,
+			ServiceAccountJson:        serviceAccountJson,
+			ServiceAccountJsonContent: serviceAccountJsonContent,
+			Workdir:                   workdir,
+			Gat0:                      gat0,
+			Gat1:                      gat1,
+		}); err != nil {
+			panic(err)
+		}
+		userdata = buf.String()
 	}
-	return buf.String()
+	return userdata
 }
 
-func Shutdown(config CloudConfig) string {
+func Shutdown(c *cli.Context, project string, tag string, bucket string, serviceAccountJson string, serviceAccountJsonContent string, workdir string) string {
 	templ := `
 #!/bin/bash
 
@@ -99,7 +162,16 @@ func Shutdown(config CloudConfig) string {
 `
 	t := template.Must(template.New("cloudConfig").Parse(templ))
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, config); err != nil {
+	if err := t.Execute(&buf, CloudConfig{
+		Project:                   project,
+		Tag:                       tag,
+		Bucket:                    bucket,
+		ServiceAccountJson:        serviceAccountJson,
+		ServiceAccountJsonContent: serviceAccountJsonContent,
+		Workdir:                   workdir,
+		Gat0:                      gat0,
+		Gat1:                      gat1,
+	}); err != nil {
 		panic(err)
 	}
 	return buf.String()

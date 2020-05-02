@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/pprof"
 	"strconv"
@@ -40,6 +41,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/mattn/go-shellwords"
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
@@ -360,6 +362,17 @@ func deleteImage(project string, tag string, digest v1.Hash) error {
 	return nil
 }
 
+func escapeCredentials() ([]byte, string, error) {
+	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	if err != nil {
+		return bytes, "", err
+	}
+	quoted_escaped := strconv.Quote(string(bytes))
+	modifier_escaped := strings.Replace(quoted_escaped[1:len(quoted_escaped)-1], "%", "%%", -1)
+	newline_escaped := strings.Replace(modifier_escaped, "\\\\n", "\\\\\\\\n", -1)
+	return bytes, newline_escaped, nil
+}
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
@@ -634,19 +647,12 @@ func RunRemoteCommand() *cli.Command {
 				panic(err)
 			}
 
-			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
-			bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-			if err != nil {
-				panic(err)
-			}
-			quoted_escaped := strconv.Quote(string(bytes))
-			modifier_escaped := strings.Replace(quoted_escaped[1:len(quoted_escaped)-1], "%", "%%", -1)
-			newline_escaped := strings.Replace(modifier_escaped, "\\\\n", "\\\\\\\\n", -1)
-			cloudconfig := CloudConfig{project, constructTag(c), gatId(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped}
-			user_data := UserData(cloudconfig, c)
-			shutdown_script := Shutdown(cloudconfig)
+			bytes, newline_escaped, err := escapeCredentials()
+			user_data := UserData(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+			shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 			var serviceAccount ServiceAccount
 			json.Unmarshal(bytes, &serviceAccount)
+			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
 			instance := &compute.Instance{
 				Name:        gatId(c),
 				Description: "compute sample instance",
@@ -729,12 +735,37 @@ func RunLocalCommand() *cli.Command {
 			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 			config1.SetString("gat.last_project", project)
 
-			// docker cp to $(docker inspect config.WorkingDir)
-
 			if err = ensureBucket(c); err != nil {
 				panic(err)
 			}
 
+			_, newline_escaped, err := escapeCredentials()
+			scommands := DockerCommands(c, project, constructTag(c), gatId(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped, filepath.Dir(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
+
+			commands := strings.Split(scommands, "\n")
+			defer func() {
+				if r := recover(); r != nil {
+					for _, str := range commands {
+						if strings.Contains(str, "docker rm") {
+							sw, err := shellwords.Parse(str)
+							if err != nil {
+								exec.Command(sw[0], sw[1:]...).Run()
+							}
+						}
+					}
+				}
+			}()
+			for _, str := range commands {
+				sw, err := shellwords.Parse(str)
+				if err != nil {
+					panic(err)
+				}
+				cmd := exec.Command(sw[0], sw[1:]...)
+				err = cmd.Run()
+				if err != nil {
+					panic(err)
+				}
+			}
 			return nil
 		},
 	}
