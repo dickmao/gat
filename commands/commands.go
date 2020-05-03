@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,7 +42,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/mattn/go-shellwords"
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
@@ -648,7 +648,7 @@ func RunRemoteCommand() *cli.Command {
 			}
 
 			bytes, newline_escaped, err := escapeCredentials()
-			user_data := UserData(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 			shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 			var serviceAccount ServiceAccount
 			json.Unmarshal(bytes, &serviceAccount)
@@ -714,6 +714,10 @@ func RunRemoteCommand() *cli.Command {
 	}
 }
 
+func massageEscapes(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, `\"`, `""`), `\\`, `\`)
+}
+
 func RunLocalCommand() *cli.Command {
 	return &cli.Command{
 		Name: "run-local",
@@ -740,7 +744,13 @@ func RunLocalCommand() *cli.Command {
 			}
 
 			_, newline_escaped, err := escapeCredentials()
-			scommands := DockerCommands(c, project, constructTag(c), gatId(c), os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped, filepath.Dir(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(repo.Path())
+			}
+			scommands := DockerCommands(c, project, constructTag(c), pwd, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped, filepath.Dir(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
 
 			commands := strings.Split(scommands, "\n")
 			type runError struct {
@@ -751,7 +761,9 @@ func RunLocalCommand() *cli.Command {
 				if r := recover(); r != nil {
 					for _, str := range commands {
 						if strings.Contains(str, "docker rm") {
-							if sw, err := shellwords.Parse(str); err == nil {
+							r := csv.NewReader(strings.NewReader(massageEscapes(str)))
+							r.Comma = ' '
+							if sw, err := r.Read(); err == nil {
 								exec.Command(sw[0], sw[1:]...).Run()
 							}
 						}
@@ -763,9 +775,14 @@ func RunLocalCommand() *cli.Command {
 				}
 			}()
 			for _, str := range commands {
-				if sw, err := shellwords.Parse(str); err != nil {
+				if len(str) == 0 {
+					continue
+				}
+				r := csv.NewReader(strings.NewReader(massageEscapes(str)))
+				r.Comma = ' '
+				if sw, err := r.Read(); err != nil {
 					panic(err)
-				} else if len(sw) > 0 {
+				} else {
 					cmd := exec.Command(sw[0], sw[1:]...)
 					if output, err := cmd.CombinedOutput(); err != nil {
 						panic(runError{err, output})

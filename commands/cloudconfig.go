@@ -30,7 +30,8 @@ var (
 		`docker commit gat-run-container gat-run`,
 		`docker rm gat-run-container`,
 		`docker rmi gat-sentinel`,
-		`docker run --rm --entrypoint "/bin/bash" gat-run -c "( for f in $(find . -not -path '*/.*' -type f -newer sentinel) ; do mkdir -p ./results/$(dirname $f) ; ln -s $(realpath $f) ./results/$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=$(realpath ./$(basename {{ .ServiceAccountJson }})) rsync -r results gs://{{ .Bucket }}/results"`,
+		`bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/results || true"`,
+		`bash -c "docker run --rm -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( for f in \\$(find . -not -path '*/.*' -type f -newer sentinel) ; do mkdir -p ./results/\\$(dirname \\$f) ; ln -s \\$(realpath \\$f) ./results/\\$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) rsync -r results $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/results\""`,
 		`docker rmi gat-run`,
 	}
 )
