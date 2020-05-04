@@ -23,7 +23,7 @@ import (
 	"unsafe"
 
 	"cloud.google.com/go/storage"
-	git "github.com/dickmao/git2go"
+	git "github.com/dickmao/git2go/v31"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/reference"
 	v2 "github.com/docker/distribution/registry/api/v2"

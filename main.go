@@ -9,7 +9,7 @@ import (
 
 	commands "github.com/dickmao/gat/commands"
 
-	git "github.com/dickmao/git2go"
+	git "github.com/dickmao/git2go/v31"
 
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
