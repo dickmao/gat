@@ -6,7 +6,7 @@ function gat() {
   local project
   local zone
   args=()
-  commands=("create" "test" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry")
+  commands=("create" "test" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile")
   while [[ $# -gt -0 ]] ; do
       key=$1
       case "$key" in

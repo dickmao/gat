@@ -64,6 +64,7 @@ func main() {
 		commands.TestCommand(),
 		commands.RunRemoteCommand(),
 		commands.RunLocalCommand(),
+		commands.DockerfileCommand(),
 		commands.BuildCommand(),
 		commands.PushCommand(),
 		commands.EditCommand(),

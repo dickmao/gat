@@ -1,21 +1,3 @@
-FROM jupyter/base-notebook:dc9744740e12
-ENV GRANT_SUDO yes
-USER root
-WORKDIR /root
-RUN \
-  apt-get -yq update \
-  && DEBIAN_FRONTEND=noninteractive apt-get -y install gnupg \
-  && export GCSFUSE_REPO=gcsfuse-$(grep CODENAME /etc/lsb-release | egrep -o "[^=]+$") \
-  && echo "deb http://packages.cloud.google.com/apt $GCSFUSE_REPO main" | tee /etc/apt/sources.list.d/gcsfuse.list \
-  && wget -qO- https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -  \
-  && apt-get -yq update \
-  && DEBIAN_FRONTEND=noninteractive apt-get -y install gcsfuse \
-  && wget -q https://storage.googleapis.com/pub/gsutil.tar.gz \
-  && tar xfz gsutil.tar.gz -C /opt \
-  && rm -f gsutil.tar.gz \
-  && chown -R jovyan: /opt/gsutil \
-  && ln -s /opt/gsutil/gsutil /usr/local/bin
-USER jovyan
-WORKDIR /home/jovyan/work
-COPY ./Untitled.ipynb .
-CMD [ "jupyter", "nbconvert", "--to", "notebook", "--execute", "Untitled.ipynb" ]
+FROM {{ .Image }}
+COPY ./{{ .Notebook }} .
+CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .Notebook }}" ]

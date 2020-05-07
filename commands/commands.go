@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/csv"
@@ -19,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 	"unsafe"
 
@@ -362,6 +364,23 @@ func deleteImage(project string, tag string, digest v1.Hash) error {
 	return nil
 }
 
+func requiredHack(c *cli.Context, args []string) []string {
+	if c.Args().Len() != len(args) {
+		// https://github.com/urfave/cli/pull/140#issuecomment-131841364
+		bracketed := make([]string, len(args))
+		for i, v := range args {
+			bracketed[i] = fmt.Sprintf("<%s>", v)
+		}
+		cli.CommandHelpTemplate = strings.Replace(cli.CommandHelpTemplate, "[arguments...]", strings.Join(bracketed, " "), -1)
+		cli.ShowCommandHelpAndExit(c, "test", -1)
+	}
+	required := make([]string, len(args))
+	for i, _ := range args {
+		required[i] = c.Args().Get(i)
+	}
+	return required
+}
+
 func escapeCredentials() ([]byte, string, error) {
 	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 	if err != nil {
@@ -377,6 +396,33 @@ func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
+			templ := `FROM gcr.io/api-project-421333809285/gat/{{ .Image }}
+COPY ./{{ .Ipynb }} .
+CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .Ipynb }}" ]
+`
+			t := template.Must(template.New("Dockerfile").Parse(templ))
+			type Dockerfile struct {
+				Image string
+				Ipynb string
+			}
+			required := requiredHack(c, []string{"image", "ipynb"})
+			var buf bytes.Buffer
+			if err := t.Execute(&buf, Dockerfile{
+				Image: filepath.Base(required[0]),
+				Ipynb: required[1],
+			}); err != nil {
+				panic(err)
+			}
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(repo.Path())
+			}
+			dockerfile := "Dockerfile." + strings.TrimSuffix(required[1], filepath.Ext(required[1]))
+			ioutil.WriteFile(filepath.Join(pwd, dockerfile), buf.Bytes(), 0644)
 			return nil
 		},
 	}
@@ -574,12 +620,66 @@ func RegistryCommand() *cli.Command {
 	}
 }
 
+func DockerfileCommand() *cli.Command {
+	return &cli.Command{
+		Name: "dockerfile",
+		Action: func(c *cli.Context) error {
+			templ := `FROM gcr.io/api-project-421333809285/gat/{{ .Image }}
+COPY ./{{ .Ipynb }} .
+CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .Ipynb }}" ]
+`
+			t := template.Must(template.New("Dockerfile").Parse(templ))
+			type Dockerfile struct {
+				Image string
+				Ipynb string
+			}
+			required := requiredHack(c, []string{"image", "ipynb"})
+			var buf bytes.Buffer
+			if err := t.Execute(&buf, Dockerfile{
+				Image: filepath.Base(required[0]),
+				Ipynb: required[1],
+			}); err != nil {
+				panic(err)
+			}
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(repo.Path())
+			}
+			dockerfile := "Dockerfile." + strings.TrimSuffix(required[1], filepath.Ext(required[1]))
+			ioutil.WriteFile(filepath.Join(pwd, dockerfile), buf.Bytes(), 0644)
+			return nil
+		},
+	}
+}
+
 func BuildCommand() *cli.Command {
 	return &cli.Command{
-		Name: "build",
+		Name:  "build",
+		Flags: buildFlags(),
 		Action: func(c *cli.Context) error {
+			ipynb := c.String("ipynb")
+			if len(ipynb) == 0 {
+				ipynb = "Untitled.ipynb"
+			}
+			dockerfile := "Dockerfile." + strings.TrimSuffix(ipynb, filepath.Ext(ipynb))
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			repo1 := c.Context.Value(repo1Key).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
-			if err := buildImage(project, constructTag(c)); err != nil {
+			zone := c.String("zone")
+			if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
+				if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+					[]string{c.App.Name, "--project", project, "--zone", zone, "dockerfile", "base-notebook", ipynb}); err != nil {
+					panic(err)
+				}
+				panic(fmt.Sprintf("Must first edit %s\n", dockerfile))
+			}
+			if err := buildImage(project, constructTag(c), dockerfile); err != nil {
 				panic(err)
 			}
 			return nil
@@ -844,7 +944,7 @@ func pushImage(project string, tag string) error {
 	return nil
 }
 
-func buildImage(project string, tag string) error {
+func buildImage(project string, tag string, dockerfile string) error {
 	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -858,10 +958,14 @@ func buildImage(project string, tag string) error {
 		panic(err)
 	}
 	defer buildContext.Close()
-	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{Tags: []string{tag}, ForceRemove: true,
+	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{
+		Tags:        []string{tag},
+		ForceRemove: true,
+		Dockerfile:  dockerfile,
 		Labels: map[string]string{
 			"gat": tag,
-		}})
+		},
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -1274,6 +1378,15 @@ func listFlags() []cli.Flag {
 			Name:    "cpuprofile",
 			Usage:   "write cpu profile to file",
 			EnvVars: []string{"CPU_PROFILE"},
+		},
+	}
+}
+
+func buildFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:  "ipynb",
+			Usage: "ipynb file to run",
 		},
 	}
 }
