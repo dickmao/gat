@@ -661,14 +661,32 @@ func BuildCommand() *cli.Command {
 		Name:  "build",
 		Flags: buildFlags(),
 		Action: func(c *cli.Context) error {
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(repo.Path())
+			}
+			files, err := filepath.Glob(filepath.Join(pwd, "*.ipynb"))
+			if err != nil {
+				panic(err)
+			}
 			ipynb := c.String("ipynb")
 			if len(ipynb) == 0 {
-				ipynb = "Untitled.ipynb"
+				if len(files) != 1 {
+					cli.ShowCommandHelpAndExit(c, "build", -1)
+				} else {
+					ipynb = files[0]
+				}
+			}
+			ipynb = filepath.Base(ipynb)
+			if _, err := os.Stat(ipynb); os.IsNotExist(err) {
+				panic(fmt.Sprintf("%s not found\n", ipynb))
 			}
 			dockerfile := "Dockerfile." + strings.TrimSuffix(ipynb, filepath.Ext(ipynb))
-			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
 			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
