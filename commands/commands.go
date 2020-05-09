@@ -364,7 +364,7 @@ func deleteImage(project string, tag string, digest v1.Hash) error {
 	return nil
 }
 
-func requiredHack(c *cli.Context, args []string) []string {
+func requiredHack(c *cli.Context, cmd string, args []string) []string {
 	if c.Args().Len() != len(args) {
 		// https://github.com/urfave/cli/pull/140#issuecomment-131841364
 		bracketed := make([]string, len(args))
@@ -372,7 +372,7 @@ func requiredHack(c *cli.Context, args []string) []string {
 			bracketed[i] = fmt.Sprintf("<%s>", v)
 		}
 		cli.CommandHelpTemplate = strings.Replace(cli.CommandHelpTemplate, "[arguments...]", strings.Join(bracketed, " "), -1)
-		cli.ShowCommandHelpAndExit(c, "test", -1)
+		cli.ShowCommandHelpAndExit(c, cmd, -1)
 	}
 	required := make([]string, len(args))
 	for i, _ := range args {
@@ -396,33 +396,6 @@ func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
-			templ := `FROM gcr.io/api-project-421333809285/gat/{{ .Image }}
-COPY ./{{ .Ipynb }} .
-CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .Ipynb }}" ]
-`
-			t := template.Must(template.New("Dockerfile").Parse(templ))
-			type Dockerfile struct {
-				Image string
-				Ipynb string
-			}
-			required := requiredHack(c, []string{"image", "ipynb"})
-			var buf bytes.Buffer
-			if err := t.Execute(&buf, Dockerfile{
-				Image: filepath.Base(required[0]),
-				Ipynb: required[1],
-			}); err != nil {
-				panic(err)
-			}
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(repo.Path())
-			}
-			dockerfile := "Dockerfile." + strings.TrimSuffix(required[1], filepath.Ext(required[1]))
-			ioutil.WriteFile(filepath.Join(pwd, dockerfile), buf.Bytes(), 0644)
 			return nil
 		},
 	}
@@ -633,7 +606,7 @@ CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .
 				Image string
 				Ipynb string
 			}
-			required := requiredHack(c, []string{"image", "ipynb"})
+			required := requiredHack(c, "dockerfile", []string{"image", "ipynb"})
 			var buf bytes.Buffer
 			if err := t.Execute(&buf, Dockerfile{
 				Image: filepath.Base(required[0]),
@@ -978,6 +951,7 @@ func buildImage(project string, tag string, dockerfile string) error {
 	defer buildContext.Close()
 	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{
 		Tags:        []string{tag},
+		Remove:      true,
 		ForceRemove: true,
 		Dockerfile:  dockerfile,
 		Labels: map[string]string{
@@ -990,6 +964,14 @@ func buildImage(project string, tag string, dockerfile string) error {
 	defer buildResponse.Body.Close()
 	termFd, isTerm := term.GetFdInfo(os.Stderr)
 	if err := jsonmessage.DisplayJSONMessagesStream(buildResponse.Body, os.Stderr, termFd, isTerm, nil); err != nil {
+		panic(err)
+	}
+
+	// cleanup old
+	labelFilters := filters.NewArgs()
+	labelFilters.Add("dangling", "true")
+	labelFilters.Add("label", "gat="+tag)
+	if _, err = cli.ImagesPrune(context.Background(), labelFilters); err != nil {
 		panic(err)
 	}
 	return nil
