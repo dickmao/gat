@@ -40,6 +40,7 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/term"
 	"github.com/docker/docker/registry"
+	"github.com/docker/go-units"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -740,6 +741,20 @@ func RunRemoteCommand() *cli.Command {
 
 			bytes, newline_escaped, err := escapeCredentials()
 			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+			var diskSizeGb int64
+			tag := constructTag(c)
+			if images, err := getImages(project, tag); err != nil || len(images) == 0 {
+				if len(images) == 0 {
+					panic(fmt.Sprintf("Image tagged %s not found", tag))
+				} else {
+					panic(err)
+				}
+			} else {
+				diskSizeGb = 6 + images[0].Size/units.GiB
+				if diskSizeGb < 8 {
+					diskSizeGb = 8
+				}
+			}
 			shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 			var serviceAccount ServiceAccount
 			json.Unmarshal(bytes, &serviceAccount)
@@ -771,6 +786,7 @@ func RunRemoteCommand() *cli.Command {
 						InitializeParams: &compute.AttachedDiskInitializeParams{
 							// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
 							SourceImage: "projects/api-project-421333809285/global/images/cos-81-12871-96-202004291659",
+							DiskSizeGb:  diskSizeGb,
 						},
 					},
 				},
@@ -881,22 +897,29 @@ func RunLocalCommand() *cli.Command {
 	}
 }
 
-func pushImage(project string, tag string) error {
+func getImages(project string, tag string) ([]types.ImageSummary, error) {
 	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
 	}
-	if images, err := cli.ImageList(context.Background(),
-		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))}); err != nil || len(images) == 0 {
+	return cli.ImageList(context.Background(),
+		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))})
+}
+
+func pushImage(project string, tag string) error {
+	if images, err := getImages(project, tag); err != nil || len(images) == 0 {
 		if len(images) == 0 {
 			panic(fmt.Sprintf("Image tagged %s not found", tag))
 		} else {
 			panic(err)
 		}
 	}
-
 	target := filepath.Join("gcr.io", project, tag)
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		panic(err)
+	}
 	err = cli.ImageTag(context.Background(), tag, target)
 	if err != nil {
 		panic(err)
