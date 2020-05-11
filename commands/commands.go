@@ -702,7 +702,7 @@ func PushCommand() *cli.Command {
 			if newImage := getImage(project, constructTag(c)); newImage != nil {
 				newDigest, _ = newImage.Digest()
 			}
-			if len(oldDigest.String()) > 0 && oldDigest.String() != newDigest.String() {
+			if len(oldDigest.Hex) > 0 && oldDigest.String() != newDigest.String() {
 				if err := deleteImage(project, constructTag(c), oldDigest); err != nil {
 					panic(err)
 				}
@@ -829,10 +829,6 @@ func RunLocalCommand() *cli.Command {
 			}
 			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 			config1.SetString("gat.last_project", project)
-
-			if err = ensureBucket(c); err != nil {
-				panic(err)
-			}
 
 			_, newline_escaped, err := escapeCredentials()
 			var pwd string
