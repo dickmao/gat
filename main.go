@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
-	"time"
 
 	commands "github.com/dickmao/gat/commands"
 
@@ -30,17 +28,7 @@ func getRepo(path string) (*git.Repository, error) {
 	return git.OpenRepository(filepath.Clean(git_dir))
 }
 
-func main() {
-	// r, _ := git.PlainOpenWithOptions(".", &git.PlainOpenOptions{DetectDotGit: true})
-	// headRef, _ := r.Head()
-	// ref := plumbing.NewHashReference("refs/heads/my-branch", headRef.Hash())
-	// r.Storer.SetReference(ref)
-
-	logrus.SetLevel(logrus.InfoLevel)
-	logrus.SetOutput(os.Stdout)
-
-	rand.Seed(time.Now().UnixNano())
-
+func newApp() *cli.App {
 	app := cli.NewApp()
 
 	// source-gat will force-populate these if user doesn't specify
@@ -87,23 +75,22 @@ func main() {
 		cli.ShowAppHelpAndExit(c, -1)
 		return nil
 	}
+	return app
+}
 
-	repo, err := getRepo(".")
+func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.Config) {
+	repo, err := getRepo(dir)
 	if err != nil {
 		panic(err)
 	}
-	defer repo.Free()
-
 	worktree, err := repo.NewWorktreeFromSubrepository()
 	if err == nil {
-		defer worktree.Free()
+		defer repo.Free()
 		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())))
 		if err != nil {
 			panic(err)
 		}
-		defer repo.Free()
 	}
-
 	gat_path := filepath.Join(repo.Workdir(), ".gat")
 	git_dir1, err := git.Discover(gat_path, true, nil)
 	var repo1 *git.Repository
@@ -118,7 +105,7 @@ func main() {
 			panic(err)
 		}
 	}
-	defer repo1.Free()
+
 	ignored, err := repo.IsPathIgnored(".gat")
 	if err != nil {
 		panic(err)
@@ -146,8 +133,25 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	return repo, repo1, worktree, config
+}
+
+func main() {
+	// r, _ := git.PlainOpenWithOptions(".", &git.PlainOpenOptions{DetectDotGit: true})
+	// headRef, _ := r.Head()
+	// ref := plumbing.NewHashReference("refs/heads/my-branch", headRef.Hash())
+	// r.Storer.SetReference(ref)
+	logrus.SetLevel(logrus.InfoLevel)
+	logrus.SetOutput(os.Stdout)
+
+	repo, repo1, worktree, config := initGat(".")
+	defer repo.Free()
+	defer repo1.Free()
 	defer config.Free()
-	if err = app.RunContext(commands.NewContext(repo, repo1, worktree, config), os.Args); err != nil {
+	if worktree != nil {
+		defer worktree.Free()
+	}
+	if err := newApp().RunContext(commands.NewContext(repo, repo1, worktree, config), os.Args); err != nil {
 		panic(err)
 	}
 }

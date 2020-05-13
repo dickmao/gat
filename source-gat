@@ -1,3 +1,25 @@
+_gat_completions()
+{
+    local cur OPTS
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    TREES1="$(for f in $(ls -d .gat/worktrees/* 2>/dev/null ) ; do basename $f ; done ;)"
+    TREES2="$(for f in $(ls -d ../worktrees/* 2>/dev/null ) ; do basename $f ; done ;)"
+    OPTS="create
+          list
+          build
+          run-local
+          run-remote
+          push
+          dockerfile
+          $TREES1
+          $TREES2"
+    COMPREPLY=( $(compgen -W "${OPTS[*]}" -- $cur) )
+    return 0
+}
+
+complete -F _gat_completions gat
+
 function gat() {
   local output
   local commands
