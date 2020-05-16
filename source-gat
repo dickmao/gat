@@ -27,6 +27,7 @@ function gat() {
   local key
   local project
   local zone
+  local region
   args=()
   commands=("create" "test" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile")
   while [[ $# -gt -0 ]] ; do
@@ -42,6 +43,11 @@ function gat() {
 	      shift
 	      shift
 	      ;;
+	  --region)
+	      region=$2
+	      shift
+	      shift
+	      ;;
 	  *)
               args+=($key)
 	      shift
@@ -49,11 +55,12 @@ function gat() {
       esac
   done
   zone=${zone:-$(gcloud config get-value compute/zone)}
+  region=${region:-$(gcloud config get-value compute/region)}
   project=${project:-$(gcloud config get-value core/project)}
   if [ "${#args[@]}" -eq 1 ] && [[ ! " ${commands[@]} " =~ " ${args[0]} " ]] ; then
-      args=(--project $project --zone $zone edit ${args[@]})
+      args=(--project $project --zone $zone --region $region edit ${args[@]})
   else
-      args=(--project $project --zone $zone ${args[@]})
+      args=(--project $project --zone $zone --region $region ${args[@]})
   fi
   output=$($GOPATH/bin/gat ${args[@]})
   if [ $? = 7 ]; then

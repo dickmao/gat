@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -24,6 +25,7 @@ import (
 	"time"
 	"unsafe"
 
+	"cloud.google.com/go/logging/logadmin"
 	"cloud.google.com/go/storage"
 	git "github.com/dickmao/git2go/v31"
 	"github.com/docker/distribution"
@@ -48,6 +50,7 @@ import (
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/cloudfunctions/v1"
 	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/container/v1"
@@ -78,6 +81,28 @@ const repoKey key = 0
 const repo1Key key = 1
 const worktreeKey key = 2
 const configKey key = 3
+const pubsubText string = `package helloworld
+
+import (
+	"context"
+	"log"
+)
+
+// PubSubMessage is the payload of a Pub/Sub event.
+type PubSubMessage struct {
+` + "Data []byte `json:\"data\"`" + `
+}
+
+// HelloPubSub consumes a Pub/Sub message.
+func HelloPubSub(ctx context.Context, m PubSubMessage) error {
+	name := string(m.Data)
+	if name == "" {
+		name = "World"
+	}
+	log.Printf("Hello, %s!", name)
+	return nil
+}
+`
 
 var (
 	resourceManagerService     *cloudresourcemanager.Service
@@ -397,6 +422,103 @@ func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
+			project := c.String("project")
+			topic := url.Values{}
+			topic.Set("topic", "compute.googleapis.com/activity_log")
+
+			serviceAccountBytes, _, _ := escapeCredentials()
+			var serviceAccount ServiceAccount
+			json.Unmarshal(serviceAccountBytes, &serviceAccount)
+			client, err := logadmin.NewClient(context.Background(), project)
+			if err != nil {
+				panic(err)
+			}
+			sink_id := "gat-activity-log"
+			_, err = client.Sink(context.Background(), sink_id)
+			if err != nil {
+				if _, err = client.CreateSinkOpt(context.Background(), &logadmin.Sink{
+					ID:          sink_id,
+					Destination: fmt.Sprintf("pubsub.googleapis.com/projects/%s/topics/%s", project, sink_id),
+					Filter:      fmt.Sprintf("logName = projects/%s/logs/%s", project, topic.Encode()[strings.Index(topic.Encode(), "=")+1:]),
+				}, logadmin.SinkOptions{}); err != nil {
+					panic(err)
+				}
+			}
+			if s, err := cloudfunctions.NewService(context.Background()); err != nil {
+				panic(err)
+			} else {
+				service := cloudfunctions.NewProjectsLocationsFunctionsService(s)
+				region := c.String("region")
+				parent := fmt.Sprintf("projects/%s/locations/%s", project, region)
+				func_id := fmt.Sprintf("%s/functions/gat-activity-log", parent)
+				if existing, err := service.Get(func_id).Do(); err != nil && err.(*googleapi.Error).Code/100 != 2 && err.(*googleapi.Error).Code != 404 {
+					panic(err)
+				} else if existing == nil {
+					respUrl, err := service.GenerateUploadUrl(parent, &cloudfunctions.GenerateUploadUrlRequest{}).Do()
+					if err != nil {
+						panic(err)
+					}
+					data := new(bytes.Buffer)
+					zipw := zip.NewWriter(data)
+					if f, err := zipw.Create("hello_pubsub.go"); err != nil {
+						zipw.Close()
+						panic(err)
+					} else if _, err = f.Write([]byte(pubsubText)); err != nil {
+						zipw.Close()
+						panic(err)
+					}
+					if err = zipw.Close(); err != nil {
+						panic(err)
+					}
+					req, err := http.NewRequest(http.MethodPut, respUrl.UploadUrl, data)
+					if err != nil {
+						panic(err)
+					}
+					req.Header.Set("Content-Type", "application/zip")
+					req.Header.Set("x-goog-content-length-range", "0,104857600")
+					client := &http.Client{}
+					respReq, err := client.Do(req)
+					if err != nil {
+						panic(err)
+					} else if respReq.StatusCode != http.StatusOK {
+						panic(fmt.Sprintf("status %s", respReq.StatusCode))
+					}
+					cf := &cloudfunctions.CloudFunction{
+						Name:            func_id,
+						SourceUploadUrl: respUrl.UploadUrl,
+						EntryPoint:      "HelloPubSub",
+						Runtime:         "go111",
+						EventTrigger: &cloudfunctions.EventTrigger{
+							EventType: "providers/cloud.pubsub/eventTypes/topic.publish",
+
+							Resource: fmt.Sprintf("projects/%s/topics/%s", project, sink_id),
+						},
+					}
+					if op, err := service.Create(parent, cf).Do(); err != nil {
+						panic(err)
+					} else {
+						done, errstatus := waitOp(s, op.Name, 30, 2000)
+						if !done {
+							panic("Create() timed out")
+						} else if errstatus != nil {
+							panic(fmt.Sprintf("Create() returned %d", errstatus.Code))
+						}
+					}
+				}
+			}
+			if err := client.Close(); err != nil {
+				panic(err)
+			}
+			// logsink := &logging.LogSink{
+			// 	Name:           "gat-activity-log",
+			// 	Description:    "gat log sink",
+			// 	Destination:    fmt.Sprintf("pubsub.googleapis.com/projects/%s/topics/gat-activity-log", project),
+			// 	Filter:         fmt.Sprintf("logName = projects/%s/logs/%s", project, topic.Encode()[strings.Index(topic.Encode(), "=")+1:]),
+			// 	WriterIdentity: serviceAccount.Client_email,
+			// }
+			// loggingService, _ := logging.NewService(ctx)
+			// logging.NewSinksService(loggingService).Create(
+
 			return nil
 		},
 	}
@@ -664,9 +786,10 @@ func BuildCommand() *cli.Command {
 			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
+			region := c.String("region")
 			if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
 				if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-					[]string{c.App.Name, "--project", project, "--zone", zone, "dockerfile", "base-notebook", ipynb}); err != nil {
+					[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", "base-notebook", ipynb}); err != nil {
 					panic(err)
 				}
 				panic(fmt.Sprintf("Must first edit %s\n", dockerfile))
@@ -689,8 +812,9 @@ func PushCommand() *cli.Command {
 			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
+			region := c.String("region")
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "build"}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build"}); err != nil {
 				panic(err)
 			}
 			var oldDigest, newDigest v1.Hash
@@ -724,8 +848,9 @@ func RunRemoteCommand() *cli.Command {
 			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
+			region := c.String("region")
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "push"}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push"}); err != nil {
 				panic(err)
 			}
 			config1, err := repo1.Config()
@@ -761,7 +886,7 @@ func RunRemoteCommand() *cli.Command {
 			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
 			instance := &compute.Instance{
 				Name:        gatId(c),
-				Description: "compute sample instance",
+				Description: "gat compute instance",
 				MachineType: prefix + "/zones/" + zone + "/machineTypes/n1-standard-1",
 				Metadata: &compute.Metadata{
 					Items: []*compute.MetadataItems{
@@ -835,8 +960,9 @@ func RunLocalCommand() *cli.Command {
 			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
+			region := c.String("region")
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "build"}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build"}); err != nil {
 				panic(err)
 			}
 			config1, err := repo1.Config()
@@ -1279,8 +1405,9 @@ func CreateCommand() *cli.Command {
 			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
+			region := c.String("region")
 			return c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "edit", branchName})
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "edit", branchName})
 		},
 	}
 }
@@ -1405,7 +1532,26 @@ func buildFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:  "ipynb",
-			Usage: "ipynb file to run",
+			Usage: "ipynb file to build",
 		},
+	}
+}
+
+func waitOp(s *cloudfunctions.Service, name string, sec int, ms int) (bool, *cloudfunctions.Status) {
+	// https://gist.github.com/ngauthier/d6e6f80ce977bedca601
+	timeout := time.After(time.Duration(sec) * time.Second)
+	tick := time.Tick(time.Duration(ms) * time.Millisecond)
+	service := cloudfunctions.NewOperationsService(s)
+	for {
+		select {
+		case <-timeout:
+			return false, nil
+		case <-tick:
+			if op, err := service.Get(name).Do(); err != nil {
+				panic(err)
+			} else if op.Done {
+				return true, op.Error
+			}
+		}
 	}
 }

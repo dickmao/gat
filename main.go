@@ -45,6 +45,12 @@ func newApp() *cli.App {
 			Aliases:  []string{"z"},
 			Usage:    "gcp zone",
 		},
+		&cli.StringFlag{
+			Name:     "region",
+			Required: true,
+			Aliases:  []string{"r"},
+			Usage:    "gcp region",
+		},
 	}
 	app.Commands = []*cli.Command{
 		commands.CreateCommand(),
@@ -85,7 +91,6 @@ func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.
 	}
 	worktree, err := repo.NewWorktreeFromSubrepository()
 	if err == nil {
-		defer repo.Free()
 		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())))
 		if err != nil {
 			panic(err)
