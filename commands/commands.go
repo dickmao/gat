@@ -57,6 +57,7 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iam/v1"
 	"google.golang.org/api/option"
+	"google.golang.org/api/pubsub/v1"
 )
 
 type digest struct {
@@ -434,16 +435,21 @@ func TestCommand() *cli.Command {
 				panic(err)
 			}
 			sink_id := "gat-activity-log"
-			_, err = client.Sink(context.Background(), sink_id)
+			sink, err := client.Sink(context.Background(), sink_id)
 			if err != nil {
 				if _, err = client.CreateSinkOpt(context.Background(), &logadmin.Sink{
 					ID:          sink_id,
 					Destination: fmt.Sprintf("pubsub.googleapis.com/projects/%s/topics/%s", project, sink_id),
 					Filter:      fmt.Sprintf("logName = projects/%s/logs/%s", project, topic.Encode()[strings.Index(topic.Encode(), "=")+1:]),
-				}, logadmin.SinkOptions{}); err != nil {
+				}, logadmin.SinkOptions{
+					UniqueWriterIdentity: true,
+				}); err != nil {
 					panic(err)
 				}
 			}
+
+			// ProjectsLocationsFunctions
+			topic_id := fmt.Sprintf("projects/%s/topics/%s", project, sink_id)
 			if s, err := cloudfunctions.NewService(context.Background()); err != nil {
 				panic(err)
 			} else {
@@ -491,7 +497,7 @@ func TestCommand() *cli.Command {
 						EventTrigger: &cloudfunctions.EventTrigger{
 							EventType: "providers/cloud.pubsub/eventTypes/topic.publish",
 
-							Resource: fmt.Sprintf("projects/%s/topics/%s", project, sink_id),
+							Resource: topic_id,
 						},
 					}
 					if op, err := service.Create(parent, cf).Do(); err != nil {
@@ -506,6 +512,31 @@ func TestCommand() *cli.Command {
 					}
 				}
 			}
+
+			// Topics
+			if s, err := pubsub.NewService(context.Background()); err != nil {
+				panic(err)
+			} else {
+				service := pubsub.NewProjectsTopicsService(s)
+				if opolicy, err := service.GetIamPolicy(topic_id).Do(); err != nil {
+					panic(err)
+				} else if npolicy, err := service.SetIamPolicy(topic_id, &pubsub.SetIamPolicyRequest{
+					Policy: &pubsub.Policy{
+						Bindings: []*pubsub.Binding{
+							&pubsub.Binding{
+								Members: []string{sink.WriterIdentity},
+								Role:    "roles/pubsub.publisher",
+							},
+						},
+						Etag: opolicy.Etag,
+					},
+				}).Do(); err != nil {
+					panic(err)
+				} else {
+					fmt.Println(npolicy)
+				}
+			}
+
 			if err := client.Close(); err != nil {
 				panic(err)
 			}
@@ -752,6 +783,39 @@ CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .
 	}
 }
 
+func singleIpynb(c *cli.Context) string {
+	repo := c.Context.Value(repoKey).(*git.Repository)
+	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+	var pwd string
+	if worktree != nil {
+		pwd = worktree.Path()
+	} else {
+		pwd = filepath.Dir(repo.Path())
+	}
+	files, err := filepath.Glob(filepath.Join(pwd, "*.ipynb"))
+	if err != nil {
+		panic(err)
+	}
+	ipynb := c.String("ipynb")
+	if len(ipynb) == 0 {
+		if len(files) != 1 {
+			cli.ShowCommandHelpAndExit(c, c.Command.Name, -1)
+		} else {
+			ipynb = files[0]
+		}
+	} else if _, err := os.Stat(ipynb); os.IsNotExist(err) {
+		if filepath.Ext(ipynb) != ".ipynb" {
+			ipynb += ".ipynb"
+			if _, err := os.Stat(ipynb); os.IsNotExist(err) {
+				panic(fmt.Sprintf("%s not found\n", ipynb))
+			}
+		} else {
+			panic(fmt.Sprintf("%s not found\n", ipynb))
+		}
+	}
+	return filepath.Base(ipynb)
+}
+
 func BuildCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "build",
@@ -759,28 +823,7 @@ func BuildCommand() *cli.Command {
 		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(repo.Path())
-			}
-			files, err := filepath.Glob(filepath.Join(pwd, "*.ipynb"))
-			if err != nil {
-				panic(err)
-			}
-			ipynb := c.String("ipynb")
-			if len(ipynb) == 0 {
-				if len(files) != 1 {
-					cli.ShowCommandHelpAndExit(c, "build", -1)
-				} else {
-					ipynb = files[0]
-				}
-			}
-			ipynb = filepath.Base(ipynb)
-			if _, err := os.Stat(ipynb); os.IsNotExist(err) {
-				panic(fmt.Sprintf("%s not found\n", ipynb))
-			}
+			ipynb := singleIpynb(c)
 			dockerfile := "Dockerfile." + strings.TrimSuffix(ipynb, filepath.Ext(ipynb))
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			config := c.Context.Value(configKey).(*git.Config)
@@ -804,7 +847,8 @@ func BuildCommand() *cli.Command {
 
 func PushCommand() *cli.Command {
 	return &cli.Command{
-		Name: "push",
+		Name:  "push",
+		Flags: pushFlags(),
 		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
@@ -813,8 +857,9 @@ func PushCommand() *cli.Command {
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
+			ipynb := singleIpynb(c)
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build"}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--ipynb", ipynb}); err != nil {
 				panic(err)
 			}
 			var oldDigest, newDigest v1.Hash
@@ -849,8 +894,9 @@ func RunRemoteCommand() *cli.Command {
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
+			ipynb := singleIpynb(c)
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push"}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--ipynb", ipynb}); err != nil {
 				panic(err)
 			}
 			config1, err := repo1.Config()
@@ -952,7 +998,8 @@ func massageEscapes(s string) string {
 
 func RunLocalCommand() *cli.Command {
 	return &cli.Command{
-		Name: "run-local",
+		Name:  "run-local",
+		Flags: runLocalFlags(),
 		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
@@ -961,8 +1008,9 @@ func RunLocalCommand() *cli.Command {
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
+			ipynb := singleIpynb(c)
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build"}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--ipynb", ipynb}); err != nil {
 				panic(err)
 			}
 			config1, err := repo1.Config()
@@ -1515,6 +1563,19 @@ func runRemoteFlags() []cli.Flag {
 			Name:  "noshutdown",
 			Usage: "do not execute shutdown.service",
 		},
+		&cli.StringFlag{
+			Name:  "ipynb",
+			Usage: "ipynb file to build",
+		},
+	}
+}
+
+func runLocalFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:  "ipynb",
+			Usage: "ipynb file to build",
+		},
 	}
 }
 
@@ -1524,6 +1585,15 @@ func listFlags() []cli.Flag {
 			Name:    "cpuprofile",
 			Usage:   "write cpu profile to file",
 			EnvVars: []string{"CPU_PROFILE"},
+		},
+	}
+}
+
+func pushFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:  "ipynb",
+			Usage: "ipynb file to build",
 		},
 	}
 }

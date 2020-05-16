@@ -1,8 +1,9 @@
 _gat_completions()
 {
-    local cur OPTS
+    local cur previous OPTS
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
+    previous=${COMP_WORDS[COMP_CWORD-1]}
     TREES1="$(for f in $(ls -d .gat/worktrees/* 2>/dev/null ) ; do basename $f ; done ;)"
     TREES2="$(for f in $(ls -d ../worktrees/* 2>/dev/null ) ; do basename $f ; done ;)"
     OPTS="create
@@ -14,7 +15,11 @@ _gat_completions()
           dockerfile
           $TREES1
           $TREES2"
-    COMPREPLY=( $(compgen -W "${OPTS[*]}" -- $cur) )
+    if [[ $previous = '--ipynb' ]]; then
+        COMPREPLY=( $(compgen -o filenames -A file -- $cur) )
+    else
+	COMPREPLY=( $(compgen -W "${OPTS[*]}" -- $cur) )
+    fi
     return 0
 }
 
