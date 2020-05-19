@@ -47,8 +47,7 @@ var (
 // t, _ := template.New("gomacro").Parse(`{{range .Gat1}}{{with .}}{{. | printf "%s\n" }}{{end}}{{ $.Redouble | printf "%s\n" }}{{end}}`)
 // _ = t.Execute(os.Stdout, localConfig{ []string{"foo", "bar"}, []string{"baz {{ $.Redouble }}", "qux"}, "doubled" })
 
-const templ string = `
-#cloud-config
+const templ string = `#cloud-config
 
 users:
 - default

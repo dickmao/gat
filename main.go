@@ -56,6 +56,7 @@ func newApp() *cli.App {
 		commands.CreateCommand(),
 		commands.RegistryCommand(),
 		commands.TestCommand(),
+		commands.SendgridCommand(),
 		commands.RunRemoteCommand(),
 		commands.RunLocalCommand(),
 		commands.DockerfileCommand(),

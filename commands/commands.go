@@ -82,28 +82,6 @@ const repoKey key = 0
 const repo1Key key = 1
 const worktreeKey key = 2
 const configKey key = 3
-const pubsubText string = `package helloworld
-
-import (
-	"context"
-	"log"
-)
-
-// PubSubMessage is the payload of a Pub/Sub event.
-type PubSubMessage struct {
-` + "Data []byte `json:\"data\"`" + `
-}
-
-// HelloPubSub consumes a Pub/Sub message.
-func HelloPubSub(ctx context.Context, m PubSubMessage) error {
-	name := string(m.Data)
-	if name == "" {
-		name = "World"
-	}
-	log.Printf("Hello, %s!", name)
-	return nil
-}
-`
 
 var (
 	resourceManagerService     *cloudresourcemanager.Service
@@ -423,10 +401,19 @@ func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
+			return nil
+		},
+	}
+}
+
+func SendgridCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "sendgrid",
+		Flags: sendgridFlags(),
+		Action: func(c *cli.Context) error {
 			project := c.String("project")
 			topic := url.Values{}
 			topic.Set("topic", "compute.googleapis.com/activity_log")
-
 			serviceAccountBytes, _, _ := escapeCredentials()
 			var serviceAccount ServiceAccount
 			json.Unmarshal(serviceAccountBytes, &serviceAccount)
@@ -459,56 +446,74 @@ func TestCommand() *cli.Command {
 				func_id := fmt.Sprintf("%s/functions/gat-activity-log", parent)
 				if existing, err := service.Get(func_id).Do(); err != nil && err.(*googleapi.Error).Code/100 != 2 && err.(*googleapi.Error).Code != 404 {
 					panic(err)
-				} else if existing == nil {
-					respUrl, err := service.GenerateUploadUrl(parent, &cloudfunctions.GenerateUploadUrlRequest{}).Do()
-					if err != nil {
-						panic(err)
-					}
-					data := new(bytes.Buffer)
-					zipw := zip.NewWriter(data)
-					if f, err := zipw.Create("hello_pubsub.go"); err != nil {
-						zipw.Close()
-						panic(err)
-					} else if _, err = f.Write([]byte(pubsubText)); err != nil {
-						zipw.Close()
-						panic(err)
-					}
-					if err = zipw.Close(); err != nil {
-						panic(err)
-					}
-					req, err := http.NewRequest(http.MethodPut, respUrl.UploadUrl, data)
-					if err != nil {
-						panic(err)
-					}
-					req.Header.Set("Content-Type", "application/zip")
-					req.Header.Set("x-goog-content-length-range", "0,104857600")
-					client := &http.Client{}
-					respReq, err := client.Do(req)
-					if err != nil {
-						panic(err)
-					} else if respReq.StatusCode != http.StatusOK {
-						panic(fmt.Sprintf("status %s", respReq.StatusCode))
-					}
-					cf := &cloudfunctions.CloudFunction{
-						Name:            func_id,
-						SourceUploadUrl: respUrl.UploadUrl,
-						EntryPoint:      "HelloPubSub",
-						Runtime:         "go111",
-						EventTrigger: &cloudfunctions.EventTrigger{
-							EventType: "providers/cloud.pubsub/eventTypes/topic.publish",
-
-							Resource: topic_id,
-						},
-					}
-					if op, err := service.Create(parent, cf).Do(); err != nil {
+				} else if existing != nil {
+					if op, err := service.Delete(func_id).Do(); err != nil {
 						panic(err)
 					} else {
-						done, errstatus := waitOp(s, op.Name, 30, 2000)
+						done, errstatus := waitOp(s, op.Name, 60, 2000)
 						if !done {
-							panic("Create() timed out")
+							panic("Delete() timed out")
 						} else if errstatus != nil {
-							panic(fmt.Sprintf("Create() returned %d", errstatus.Code))
+							panic(fmt.Sprintf("Delete() returned %d", errstatus.Code))
 						}
+					}
+				}
+
+				respUrl, err := service.GenerateUploadUrl(parent, &cloudfunctions.GenerateUploadUrlRequest{}).Do()
+				if err != nil {
+					panic(err)
+				}
+				data := new(bytes.Buffer)
+				zipw := zip.NewWriter(data)
+				if f, err := zipw.Create("hello_pubsub.go"); err != nil {
+					zipw.Close()
+					panic(err)
+				} else if _, err = f.Write(PubSubSource(c, c.String("api-key"))); err != nil {
+					zipw.Close()
+					panic(err)
+				}
+				if f, err := zipw.Create("go.mod"); err != nil {
+					zipw.Close()
+					panic(err)
+				} else if _, err = f.Write(PubSubGoMod(c)); err != nil {
+					zipw.Close()
+					panic(err)
+				}
+				if err = zipw.Close(); err != nil {
+					panic(err)
+				}
+				req, err := http.NewRequest(http.MethodPut, respUrl.UploadUrl, data)
+				if err != nil {
+					panic(err)
+				}
+				req.Header.Set("Content-Type", "application/zip")
+				req.Header.Set("x-goog-content-length-range", "0,104857600")
+				client := &http.Client{}
+				respReq, err := client.Do(req)
+				if err != nil {
+					panic(err)
+				} else if respReq.StatusCode != http.StatusOK {
+					panic(fmt.Sprintf("status %s", respReq.StatusCode))
+				}
+				cf := &cloudfunctions.CloudFunction{
+					Name:            func_id,
+					SourceUploadUrl: respUrl.UploadUrl,
+					EntryPoint:      "HelloPubSub",
+					Runtime:         "go111",
+					EventTrigger: &cloudfunctions.EventTrigger{
+						EventType: "providers/cloud.pubsub/eventTypes/topic.publish",
+
+						Resource: topic_id,
+					},
+				}
+				if op, err := service.Create(parent, cf).Do(); err != nil {
+					panic(err)
+				} else {
+					done, errstatus := waitOp(s, op.Name, 60, 2000)
+					if !done {
+						panic("Create() timed out")
+					} else if errstatus != nil {
+						panic(fmt.Sprintf("Create(): %s, code %d", errstatus.Message, errstatus.Code))
 					}
 				}
 			}
@@ -1553,6 +1558,16 @@ func editFlags() []cli.Flag {
 			Name:    "cpuprofile",
 			Usage:   "write cpu profile to file",
 			EnvVars: []string{"CPU_PROFILE"},
+		},
+	}
+}
+
+func sendgridFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:     "api-key",
+			Required: true,
+			Usage:    "Set up mailer",
 		},
 	}
 }

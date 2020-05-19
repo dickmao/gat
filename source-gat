@@ -13,6 +13,7 @@ _gat_completions()
           run-remote
           push
           dockerfile
+	  sendgrid
           $TREES1
           $TREES2"
     if [[ $previous = '--ipynb' ]]; then
@@ -34,7 +35,7 @@ function gat() {
   local zone
   local region
   args=()
-  commands=("create" "test" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile")
+  commands=("create" "test" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
   while [[ $# -gt -0 ]] ; do
       key=$1
       case "$key" in
