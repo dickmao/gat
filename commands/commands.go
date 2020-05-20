@@ -406,6 +406,33 @@ func TestCommand() *cli.Command {
 	}
 }
 
+func timezoneOf(region string) string {
+	if strings.HasPrefix(region, "us-west") {
+		return "US/Pacific"
+	} else if strings.HasPrefix(region, "us-east") {
+		return "US/Eastern"
+	} else if strings.HasPrefix(region, "us-central") {
+		return "US/Central"
+	} else if strings.HasPrefix(region, "asia/southeast") {
+		return "Asia/Singapore"
+	} else if strings.HasPrefix(region, "asia/south") {
+		return "Asia/Kolkata"
+	} else if strings.HasPrefix(region, "asia") {
+		return "Asia/Tokyo"
+	} else if strings.HasPrefix(region, "europe") {
+		return "MET"
+	} else if strings.HasPrefix(region, "australia") {
+		return "Australia/Sydney"
+	} else if strings.HasPrefix(region, "australia") {
+		return "Australia/Sydney"
+	} else if strings.HasPrefix(region, "northamerica") {
+		return "US/Eastern"
+	} else if strings.HasPrefix(region, "southamerica") {
+		return "Brazil/East"
+	}
+	return "GMT"
+}
+
 func SendgridCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "sendgrid",
@@ -468,7 +495,7 @@ func SendgridCommand() *cli.Command {
 				if f, err := zipw.Create("hello_pubsub.go"); err != nil {
 					zipw.Close()
 					panic(err)
-				} else if _, err = f.Write(PubSubSource(c, c.String("api-key"))); err != nil {
+				} else if _, err = f.Write(PubSubSource(c, c.String("name"), c.String("address"), c.String("key"), timezoneOf(region))); err != nil {
 					zipw.Close()
 					panic(err)
 				}
@@ -1565,9 +1592,19 @@ func editFlags() []cli.Flag {
 func sendgridFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:     "api-key",
+			Name:     "name",
 			Required: true,
-			Usage:    "Set up mailer",
+			Usage:    "Sendgrid 'From' name",
+		},
+		&cli.StringFlag{
+			Name:     "address",
+			Required: true,
+			Usage:    "Sendgrid 'From' email address",
+		},
+		&cli.StringFlag{
+			Name:     "key",
+			Required: true,
+			Usage:    "Sendgrid API key",
 		},
 	}
 }

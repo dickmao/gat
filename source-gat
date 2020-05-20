@@ -55,7 +55,7 @@ function gat() {
 	      shift
 	      ;;
 	  *)
-              args+=($key)
+              args+=("$key")
 	      shift
 	      ;;
       esac
@@ -64,11 +64,11 @@ function gat() {
   region=${region:-$(gcloud config get-value compute/region)}
   project=${project:-$(gcloud config get-value core/project)}
   if [ "${#args[@]}" -eq 1 ] && [[ ! " ${commands[@]} " =~ " ${args[0]} " ]] ; then
-      args=(--project $project --zone $zone --region $region edit ${args[@]})
+      args=(--project $project --zone $zone --region $region edit "${args[@]}")
   else
-      args=(--project $project --zone $zone --region $region ${args[@]})
+      args=(--project $project --zone $zone --region $region "${args[@]}")
   fi
-  output=$($GOPATH/bin/gat ${args[@]})
+  output=$($GOPATH/bin/gat "${args[@]}")
   if [ $? = 7 ]; then
     eval "$output"
   else
