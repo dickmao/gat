@@ -26,7 +26,7 @@ func TestCreate(t *testing.T) {
 	}
 	err := app.RunContext(commands.NewContext(repo, repo1, worktree, config),
 		[]string{app.Name, "--project", "project_test", "--zone", "zone_test",
-			"create", "foobar"})
+			"--region", "us-central", "create", "foobar"})
 	if err.(cli.ExitCoder).ExitCode() != 7 {
 		t.Error("create should return 7")
 	}
