@@ -24,7 +24,9 @@ _gat_completions()
     return 0
 }
 
-complete -F _gat_completions gat
+if [ -n "$BASH_VERSION" ]; then
+  complete -F _gat_completions gat
+fi
 
 function gat() {
   local output

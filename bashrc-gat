@@ -1,0 +1,6 @@
+# >>> gat config >>>
+# !! Contents within block are managed by 'make install' dang !!
+if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/gat/source-gat" ] ; then
+  . "${XDG_CONFIG_HOME:-$HOME/.config}/gat/source-gat"
+fi
+# <<< gat config <<<
