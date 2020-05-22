@@ -32,6 +32,7 @@ import (
         "fmt"
 	"path/filepath"
         "time"
+        "encoding/json"
 
         "cloud.google.com/go/functions/metadata"
         "github.com/sendgrid/sendgrid-go"
@@ -40,29 +41,32 @@ import (
 
 // PubSubMessage is the payload of a Pub/Sub event.
 type PubSubMessage struct {
-` + "Data []byte `json:\"data\"`\nAttr map[string]string `json:\"attributes\"`\n" + `}
+` + "Data []byte `json:\"data\"`\nAttr map[string]string `json:\"attributes\"`" + `
+}
 
 // HelloPubSub consumes a Pub/Sub message.
 func HelloPubSub(ctx context.Context, m PubSubMessage) error {
         from := mail.NewEmail("{{ .SendgridName }}", "{{ .SendgridAddress }}")
         to := from
         apikey := "{{ .SendgridApiKey }}"
-        var attr string = ""
-        for key, val := range m.Attr {
-                attr += fmt.Sprintf("%s=%s\n", key, val)
-        }
-        body := string(m.Data) + "\n" + attr + "\n"
-        meta, _ := metadata.FromContext(ctx)
-        loc, _ := time.LoadLocation("{{ .Timezone }}")
-        message := mail.NewSingleEmail(from, fmt.Sprintf("[%s] %s %s", filepath.Base(meta.Resource.Name), filepath.Base(meta.EventType), meta.Timestamp.In(loc).Format("2006-01-02 15:04:05")), to, body, fmt.Sprintf("<p>%s", body))
-        client := sendgrid.NewSendClient(apikey)
-        response, err := client.Send(message)
-        if err != nil {
-                log.Println(err)
-        } else {
-                fmt.Println(response.StatusCode)
-                fmt.Println(response.Body)
-                fmt.Println(response.Headers)
+        data := struct {
+        ` + "Json map[string]interface{} `json:\"jsonPayload\"`" + `
+        }{}
+        json.Unmarshal(m.Data, &data)
+        if data.Json["event_type"].(string) == "GCE_OPERATION_DONE" {
+                meta, _ := metadata.FromContext(ctx)
+                loc, _ := time.LoadLocation("{{ .Timezone }}")
+                body := fmt.Sprintf("%s at %s: event %s %s%s\n", filepath.Base(meta.EventType), meta.Timestamp.In(loc).Format("2006-01-02 15:04:05"), data.Json["event_type"].(string), data.Json["event_subtype"].(string), m.Attr["branch"])
+                message := mail.NewSingleEmail(from, fmt.Sprintf("[%s] %s", filepath.Base(meta.Resource.Name), data.Json["event_subtype"].(string)), to, body, fmt.Sprintf("<p>%s", body))
+                client := sendgrid.NewSendClient(apikey)
+                response, err := client.Send(message)
+                if err != nil {
+                        log.Println(err)
+                } else {
+                        fmt.Println(response.StatusCode)
+                        fmt.Println(response.Body)
+                        fmt.Println(response.Headers)
+                }
         }
         return nil
 }
