@@ -3,4 +3,5 @@
 if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/gat/source-gat" ] ; then
   . "${XDG_CONFIG_HOME:-$HOME/.config}/gat/source-gat"
 fi
+export GAT_APPLICATION_CREDENTIALS=${XDG_CONFIG_HOME:-$HOME/.config}/gcloud/gat-service-account.json
 # <<< gat config <<<

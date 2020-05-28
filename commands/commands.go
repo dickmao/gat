@@ -401,6 +401,37 @@ func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name: "test",
 		Action: func(c *cli.Context) error {
+			// input Dockerfile.main, output Dockerfile.main.gat
+			dockerfile := requiredHack(c, "test", []string{"dockerfile"})[0]
+			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+			if err != nil {
+				panic(err)
+			}
+
+			baseTag := "gat/base/" + constructTag(c)
+			imageId, err := buildBaseImage(cli, baseTag, dockerfile)
+			if err != nil {
+				panic(err)
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					cli.ImageRemove(context.Background(), imageId, types.ImageRemoveOptions{
+						Force:         true,
+						PruneChildren: true,
+					})
+					panic(r)
+				}
+			}()
+
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(repo.Path())
+			}
+			ioutil.WriteFile(filepath.Join(pwd, fmt.Sprintf("%s.gat", dockerfile)), DockerfileSource(c, cli, imageId), 0644)
 			return nil
 		},
 	}
@@ -780,6 +811,8 @@ func RegistryCommand() *cli.Command {
 }
 
 func DockerfileCommand() *cli.Command {
+	// this assumes notebook and api-project-421333809285
+	// input Dockerfile.main, output Dockerfile.main.gat
 	return &cli.Command{
 		Name: "dockerfile",
 		Action: func(c *cli.Context) error {
@@ -946,7 +979,7 @@ func RunRemoteCommand() *cli.Command {
 			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 			var diskSizeGb int64
 			tag := constructTag(c)
-			if images, err := getImages(project, tag); err != nil || len(images) == 0 {
+			if images, err := getImages(tag); err != nil || len(images) == 0 {
 				if len(images) == 0 {
 					panic(fmt.Sprintf("Image tagged %s not found", tag))
 				} else {
@@ -1103,7 +1136,7 @@ func RunLocalCommand() *cli.Command {
 	}
 }
 
-func getImages(project string, tag string) ([]types.ImageSummary, error) {
+func getImages(tag string) ([]types.ImageSummary, error) {
 	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -1114,7 +1147,7 @@ func getImages(project string, tag string) ([]types.ImageSummary, error) {
 }
 
 func pushImage(project string, tag string) error {
-	if images, err := getImages(project, tag); err != nil || len(images) == 0 {
+	if images, err := getImages(tag); err != nil || len(images) == 0 {
 		if len(images) == 0 {
 			panic(fmt.Sprintf("Image tagged %s not found", tag))
 		} else {
@@ -1160,6 +1193,50 @@ func pushImage(project string, tag string) error {
 	return nil
 }
 
+func buildBaseImage(cli *client.Client, baseTag string, dockerfile string) (string, error) {
+	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{})
+	if err != nil {
+		panic(err)
+	}
+	defer buildContext.Close()
+	// cleanup old
+	defer func() {
+		labelFilters := filters.NewArgs()
+		labelFilters.Add("dangling", "true")
+		labelFilters.Add("label", "gat="+baseTag)
+		cli.ImagesPrune(context.Background(), labelFilters)
+	}()
+	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{
+		Tags:        []string{baseTag},
+		Remove:      true,
+		ForceRemove: true,
+		Dockerfile:  dockerfile,
+		Labels: map[string]string{
+			"gat": baseTag,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer buildResponse.Body.Close()
+	devnull, _ := os.Open(os.DevNull)
+	devnull = os.Stderr
+	termFd, isTerm := term.GetFdInfo(devnull)
+	if err := jsonmessage.DisplayJSONMessagesStream(buildResponse.Body, devnull, termFd, isTerm, nil); err != nil {
+		panic(err)
+	}
+	// no aux found in DisplayJSONMessagesStream, and don't want to parse.
+	images, err := getImages(baseTag)
+	if err != nil || len(images) == 0 {
+		if len(images) == 0 {
+			panic(fmt.Sprintf("Image tagged %s not found", baseTag))
+		} else {
+			panic(err)
+		}
+	}
+	return images[0].ID, nil
+}
+
 func buildImage(project string, tag string, dockerfile string) error {
 	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -1187,19 +1264,27 @@ func buildImage(project string, tag string, dockerfile string) error {
 		panic(err)
 	}
 	defer buildResponse.Body.Close()
+	defer func() {
+		// cleanup old
+		labelFilters := filters.NewArgs()
+		labelFilters.Add("dangling", "true")
+		labelFilters.Add("label", "gat="+tag)
+		cli.ImagesPrune(context.Background(), labelFilters)
+	}()
+
 	termFd, isTerm := term.GetFdInfo(os.Stderr)
 	if err := jsonmessage.DisplayJSONMessagesStream(buildResponse.Body, os.Stderr, termFd, isTerm, nil); err != nil {
 		panic(err)
 	}
 
-	// cleanup old
-	labelFilters := filters.NewArgs()
-	labelFilters.Add("dangling", "true")
-	labelFilters.Add("label", "gat="+tag)
-	if _, err = cli.ImagesPrune(context.Background(), labelFilters); err != nil {
-		panic(err)
-	}
 	return nil
+}
+
+func promptWorktree(prompt string) (string, error) {
+	fmt.Fprintf(os.Stderr, "%s", prompt)
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	return scanner.Text(), scanner.Err()
 }
 
 func CreateFromRepo(c *cli.Context) (string, error) {
@@ -1223,15 +1308,13 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 
 	branchName := c.Args().Get(0)
 	if branchName == "" {
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
-		if err := scanner.Err(); err != nil {
+		branchName, err = promptWorktree("New worktree: ")
+		if err != nil {
 			if stash_oid != nil {
 				repo.Stashes.Pop(0, opts)
 			}
 			panic(err)
 		}
-		branchName = scanner.Text()
 	}
 	if old_branch, err := repo1.LookupBranch(branchName, git.BranchLocal); err == nil {
 		defer old_branch.Free()
@@ -1356,12 +1439,10 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 
 	branchName := c.Args().Get(0)
 	if branchName == "" {
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
-		if err := scanner.Err(); err != nil {
+		branchName, err = promptWorktree("New worktree: ")
+		if err != nil {
 			panic(err)
 		}
-		branchName = scanner.Text()
 	}
 
 	if old_branch, err := repo1.LookupBranch(branchName, git.BranchLocal); err == nil {
@@ -1538,12 +1619,10 @@ func EditCommand() *cli.Command {
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			worktreeName := c.Args().Get(0)
 			if worktreeName == "" {
-				scanner := bufio.NewScanner(os.Stdin)
-				scanner.Scan()
-				if err := scanner.Err(); err != nil {
+				var err error
+				if worktreeName, err = promptWorktree("Worktree: "); err != nil {
 					panic(err)
 				}
-				worktreeName = scanner.Text()
 			}
 			_, err := repo1.LookupBranch(worktreeName, git.BranchLocal)
 			if err != nil {
@@ -1655,6 +1734,10 @@ func buildFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "ipynb",
 			Usage: "ipynb file to build",
+		},
+		&cli.StringFlag{
+			Name:  "image",
+			Usage: "FROM docker image",
 		},
 	}
 }

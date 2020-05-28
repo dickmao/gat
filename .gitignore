@@ -1,3 +1,5 @@
 .cos
 .gat
 sendgrid.env
+docs/build
+venv

@@ -10,11 +10,11 @@ $(XDG_CONFIG_HOME)/gat/source-gat: source-gat
 
 .PHONY: bashrc
 bashrc:
-	if [ ! -f "$(HOME)/.bashrc" ] && [ ! -f "$(HOME)/.zshrc" ] \
+	@if [ ! -f "$(HOME)/.bashrc" ] && [ ! -f "$(HOME)/.zshrc" ] \
 	; then echo gat only supports bash, zsh \
 	;      exit 1 \
 	; fi
-	for bashrc in "$(HOME)/.bashrc" "$(HOME)/.zshrc" \
+	@for bashrc in "$(HOME)/.bashrc" "$(HOME)/.zshrc" \
 	; do if [ -e $$bashrc ] \
 	;    then tmpfile=$$(mktemp /tmp/gat.bashrc.XXXXXX) \
 	;         if egrep -q "^.*>.*gat config" "$$bashrc" \
