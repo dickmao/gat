@@ -21,7 +21,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 	"unsafe"
 
@@ -399,39 +398,11 @@ func escapeCredentials() ([]byte, string, error) {
 
 func TestCommand() *cli.Command {
 	return &cli.Command{
-		Name: "test",
+		Name:  "test",
+		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
-			// input Dockerfile.main, output Dockerfile.main.gat
-			dockerfile := requiredHack(c, "test", []string{"dockerfile"})[0]
-			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-			if err != nil {
-				panic(err)
-			}
-
-			baseTag := "gat/base/" + constructTag(c)
-			imageId, err := buildBaseImage(cli, baseTag, dockerfile)
-			if err != nil {
-				panic(err)
-			}
-			defer func() {
-				if r := recover(); r != nil {
-					cli.ImageRemove(context.Background(), imageId, types.ImageRemoveOptions{
-						Force:         true,
-						PruneChildren: true,
-					})
-					panic(r)
-				}
-			}()
-
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(repo.Path())
-			}
-			ioutil.WriteFile(filepath.Join(pwd, fmt.Sprintf("%s.gat", dockerfile)), DockerfileSource(c, cli, imageId), 0644)
+			infile := inputDockerfile(c)
+			fmt.Println(infile)
 			return nil
 		},
 	}
@@ -811,28 +782,32 @@ func RegistryCommand() *cli.Command {
 }
 
 func DockerfileCommand() *cli.Command {
-	// this assumes notebook and api-project-421333809285
 	// input Dockerfile.main, output Dockerfile.main.gat
 	return &cli.Command{
 		Name: "dockerfile",
 		Action: func(c *cli.Context) error {
-			templ := `FROM gcr.io/api-project-421333809285/gat/{{ .Image }}
-COPY ./{{ .Ipynb }} .
-CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .Ipynb }}" ]
-`
-			t := template.Must(template.New("Dockerfile").Parse(templ))
-			type Dockerfile struct {
-				Image string
-				Ipynb string
-			}
-			required := requiredHack(c, "dockerfile", []string{"image", "ipynb"})
-			var buf bytes.Buffer
-			if err := t.Execute(&buf, Dockerfile{
-				Image: filepath.Base(required[0]),
-				Ipynb: required[1],
-			}); err != nil {
+			// input Dockerfile, output Dockerfile.gat
+			infile := requiredHack(c, "dockerfile", []string{"Dockerfile"})[0]
+			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+			if err != nil {
 				panic(err)
 			}
+
+			baseTag := "gat/base/" + constructTag(c)
+			imageId, err := buildBaseImage(cli, baseTag, infile)
+			if err != nil {
+				panic(err)
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					cli.ImageRemove(context.Background(), imageId, types.ImageRemoveOptions{
+						Force:         true,
+						PruneChildren: true,
+					})
+					panic(r)
+				}
+			}()
+
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
 			var pwd string
@@ -841,44 +816,43 @@ CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .
 			} else {
 				pwd = filepath.Dir(repo.Path())
 			}
-			dockerfile := "Dockerfile." + strings.TrimSuffix(required[1], filepath.Ext(required[1]))
-			ioutil.WriteFile(filepath.Join(pwd, dockerfile), buf.Bytes(), 0644)
+			ioutil.WriteFile(filepath.Join(pwd, fmt.Sprintf("%s.gat", infile)), DockerfileSource(c, cli, imageId), 0644)
 			return nil
 		},
 	}
 }
 
-func singleIpynb(c *cli.Context) string {
-	repo := c.Context.Value(repoKey).(*git.Repository)
-	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-	var pwd string
-	if worktree != nil {
-		pwd = worktree.Path()
-	} else {
-		pwd = filepath.Dir(repo.Path())
-	}
-	files, err := filepath.Glob(filepath.Join(pwd, "*.ipynb"))
-	if err != nil {
-		panic(err)
-	}
-	ipynb := c.String("ipynb")
-	if len(ipynb) == 0 {
-		if len(files) != 1 {
+func inputDockerfile(c *cli.Context) string {
+	result := c.String("dockerfile")
+	if len(result) == 0 {
+		repo := c.Context.Value(repoKey).(*git.Repository)
+		worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+		var pwd string
+		if worktree != nil {
+			pwd = worktree.Path()
+		} else {
+			pwd = filepath.Dir(repo.Path())
+		}
+		globs, err := filepath.Glob(filepath.Join(pwd, "Dockerfile*"))
+		if err != nil {
+			panic(err)
+		}
+		var cands []string
+		for _, glob := range globs {
+			if filepath.Ext(glob) != ".gat" {
+				cands = append(cands, glob)
+			}
+		}
+		if len(cands) != 1 {
 			cli.ShowCommandHelpAndExit(c, c.Command.Name, -1)
 		} else {
-			ipynb = files[0]
-		}
-	} else if _, err := os.Stat(ipynb); os.IsNotExist(err) {
-		if filepath.Ext(ipynb) != ".ipynb" {
-			ipynb += ".ipynb"
-			if _, err := os.Stat(ipynb); os.IsNotExist(err) {
-				panic(fmt.Sprintf("%s not found\n", ipynb))
-			}
-		} else {
-			panic(fmt.Sprintf("%s not found\n", ipynb))
+			result = cands[0]
 		}
 	}
-	return filepath.Base(ipynb)
+	if _, err := os.Stat(result); os.IsNotExist(err) {
+		panic(fmt.Sprintf("%s not found\n", result))
+	}
+	return filepath.Base(result)
 }
 
 func BuildCommand() *cli.Command {
@@ -888,26 +862,37 @@ func BuildCommand() *cli.Command {
 		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			ipynb := singleIpynb(c)
-			dockerfile := "Dockerfile." + strings.TrimSuffix(ipynb, filepath.Ext(ipynb))
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
-			if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
-				if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-					[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", "base-notebook", ipynb}); err != nil {
-					panic(err)
-				}
-				panic(fmt.Sprintf("Must first edit %s\n", dockerfile))
-			}
-			if err := buildImage(project, constructTag(c), dockerfile); err != nil {
+			infile := inputDockerfile(c)
+			outfile := maybeRegenOutfile(c, infile, func() error {
+				return c.App.RunContext(NewContext(repo, repo1, worktree, config), []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile})
+			})
+			finalTag := "gat/" + constructTag(c)
+			if err := buildImage(project, finalTag, outfile); err != nil {
 				panic(err)
 			}
 			return nil
 		},
 	}
+}
+
+func maybeRegenOutfile(c *cli.Context, infile string, regen func() error) string {
+	outfile := infile + ".gat"
+	instat, err := os.Stat(infile)
+	if err != nil {
+		panic(err)
+	}
+	outstat, err := os.Stat(outfile)
+	if os.IsNotExist(err) || instat.ModTime().After(outstat.ModTime()) {
+		if err := regen(); err != nil {
+			panic(err)
+		}
+	}
+	return outfile
 }
 
 func PushCommand() *cli.Command {
@@ -922,9 +907,9 @@ func PushCommand() *cli.Command {
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
-			ipynb := singleIpynb(c)
+			infile := inputDockerfile(c)
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--ipynb", ipynb}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
 				panic(err)
 			}
 			var oldDigest, newDigest v1.Hash
@@ -959,9 +944,9 @@ func RunRemoteCommand() *cli.Command {
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
-			ipynb := singleIpynb(c)
+			infile := inputDockerfile(c)
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--ipynb", ipynb}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
 				panic(err)
 			}
 			config1, err := repo1.Config()
@@ -1073,9 +1058,9 @@ func RunLocalCommand() *cli.Command {
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
-			ipynb := singleIpynb(c)
+			infile := inputDockerfile(c)
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--ipynb", ipynb}); err != nil {
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
 				panic(err)
 			}
 			config1, err := repo1.Config()
@@ -1193,7 +1178,7 @@ func pushImage(project string, tag string) error {
 	return nil
 }
 
-func buildBaseImage(cli *client.Client, baseTag string, dockerfile string) (string, error) {
+func buildBaseImage(cli *client.Client, baseTag string, infile string) (string, error) {
 	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{})
 	if err != nil {
 		panic(err)
@@ -1210,7 +1195,7 @@ func buildBaseImage(cli *client.Client, baseTag string, dockerfile string) (stri
 		Tags:        []string{baseTag},
 		Remove:      true,
 		ForceRemove: true,
-		Dockerfile:  dockerfile,
+		Dockerfile:  infile,
 		Labels: map[string]string{
 			"gat": baseTag,
 		},
@@ -1237,7 +1222,7 @@ func buildBaseImage(cli *client.Client, baseTag string, dockerfile string) (stri
 	return images[0].ID, nil
 }
 
-func buildImage(project string, tag string, dockerfile string) error {
+func buildImage(project string, tag string, outfile string) error {
 	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -1255,7 +1240,7 @@ func buildImage(project string, tag string, dockerfile string) error {
 		Tags:        []string{tag},
 		Remove:      true,
 		ForceRemove: true,
-		Dockerfile:  dockerfile,
+		Dockerfile:  outfile,
 		Labels: map[string]string{
 			"gat": tag,
 		},
@@ -1695,8 +1680,8 @@ func runRemoteFlags() []cli.Flag {
 			Usage: "do not execute shutdown.service",
 		},
 		&cli.StringFlag{
-			Name:  "ipynb",
-			Usage: "ipynb file to build",
+			Name:  "dockerfile",
+			Usage: "Dockerfile file to build",
 		},
 	}
 }
@@ -1704,8 +1689,8 @@ func runRemoteFlags() []cli.Flag {
 func runLocalFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:  "ipynb",
-			Usage: "ipynb file to build",
+			Name:  "dockerfile",
+			Usage: "Dockerfile file to build",
 		},
 	}
 }
@@ -1723,8 +1708,8 @@ func listFlags() []cli.Flag {
 func pushFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:  "ipynb",
-			Usage: "ipynb file to build",
+			Name:  "dockerfile",
+			Usage: "Dockerfile file to build",
 		},
 	}
 }
@@ -1732,12 +1717,17 @@ func pushFlags() []cli.Flag {
 func buildFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:  "ipynb",
-			Usage: "ipynb file to build",
+			Name:  "dockerfile",
+			Usage: "Dockerfile file to build",
 		},
+	}
+}
+
+func testFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.StringFlag{
-			Name:  "image",
-			Usage: "FROM docker image",
+			Name:  "dockerfile",
+			Usage: "Test",
 		},
 	}
 }
