@@ -85,4 +85,4 @@ jobs:
                cd ~/Library/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/Library && cmake --build . --target install ; \
             fi ; \
          fi
-         cd $GITHUB_WORKSPACE && make test
+         cd $GITHUB_WORKSPACE && PKG_CONFIG_PATH=~/Library/lib/pkgconfig make test
