@@ -49,8 +49,9 @@ jobs:
         path: |
           /usr/local/lib/pkgconfig/libgit2*
           /usr/local/lib/libgit2*
-          /usr/local/include/git2
-        key: ${{ runner.os }}-libgit2-000
+          /usr/local/include/git2/*
+          /usr/local/Cellar/pkg-config/**
+        key: ${{ runner.os }}-libgit2-001
 
     - name: paths
       uses: dickmao/setup-paths@master
