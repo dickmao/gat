@@ -33,9 +33,21 @@ jobs:
         key: ${{ runner.os }}-pip-001
 
     - uses: actions/cache@v1
+      if: startsWith(runner.os, 'macOS')
+      with:
+        path: ~/Library/Caches/pip
+        key: ${{ runner.os }}-pip-001
+
+    - uses: actions/cache@v1
       with:
         path: ~/local
         key: ${{ runner.os }}-local-000
+
+    - uses: actions/cache@v2
+      if: startsWith(runner.os, 'macOS')
+      with:
+        path: [ /usr/local/lib/pkgconfig/libgit2*, /usr/local/lib/libgit2*, /usr/local/include/git2 ]
+        key: ${{ runner.os }}-libgit2-000
 
     - name: paths
       uses: dickmao/setup-paths@master
@@ -65,14 +77,16 @@ jobs:
          if [ ! -e ~/local/lib/libgit2.so ]; then \
             if [ ! -e ~/local/libgit2-1.0.1 ]; then \
                cd ~/local && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
-               cd ~/local/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/local && cmake --build . --target install ; \
             fi ; \
+            cd ~/local/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/local && cmake --build . --target install ; \
          fi
          LD_LIBRARY_PATH=~/local/lib PKG_CONFIG_PATH=~/local/lib/pkgconfig make test
 
     - name: libgit2-macOS
       if: startsWith(runner.os, 'macOS')
       run: |
-         cd ~/Library && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz
-         cd ~/Library/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" && cmake --build . --target install
+         if [ ! -e /usr/local/lib/libgit2.dylib ]; then \
+            cd ~/Library && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
+            cd ~/Library/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" && cmake --build . --target install ; \
+         fi
          cd $GITHUB_WORKSPACE && make test
