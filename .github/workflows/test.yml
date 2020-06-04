@@ -63,10 +63,11 @@ jobs:
         go version
         curl --version
 
-    - name: gnupg
+    - name: macos-dependencies
       if: startsWith(runner.os, 'macOS')
       run: |
          brew list gnupg &>/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 brew install gnupg
+         brew list pkgconfig &>/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 brew install pkg-config
 
     - name: test
       run: |
