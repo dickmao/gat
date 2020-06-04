@@ -67,6 +67,7 @@ jobs:
     - name: libgit2-Linux
       if: startsWith(runner.os, 'Linux')
       run: |
+         mkdir -p ~/local
          if [ ! -e ~/local/lib/libgit2.so ]; then \
             if [ ! -e ~/local/libgit2-1.0.1 ]; then \
                cd ~/local && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
@@ -78,10 +79,10 @@ jobs:
     - name: libgit2-macOS
       if: startsWith(runner.os, 'macOS')
       run: |
-         if [ ! -e ~/local/lib/libgit2.so ]; then \
-            if [ ! -e ~/local/libgit2-1.0.1 ]; then \
-               cd ~/local && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
-               cd ~/local/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/Library && cmake --build . --target install ; \
+         if [ ! -e ~/Library/libgit2.so ]; then \
+            if [ ! -e ~/Library/libgit2-1.0.1 ]; then \
+               cd ~/Library && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
+               cd ~/Library/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/Library && cmake --build . --target install ; \
             fi ; \
          fi
          make test
