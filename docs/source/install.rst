@@ -5,11 +5,13 @@
 Google Cloud Preliminaries
 ==========================
 
-Follow `docker engine install <https://docs.docker.com/engine/install>`_.
+Follow `docker install <https://docs.docker.com/engine/install>`_.
 
 Follow `billing setup <https://cloud.google.com/compute/docs/quickstart-linux>`_.
 
 Follow `gcloud install <https://cloud.google.com/sdk/gcloud#the_gcloud_cli_and_cloud_sdk>`_.
+
+Follow `gcsfuse install <https://github.com/GoogleCloudPlatform/gcsfuse/blob/master/docs/installing.md>`_.
 
 Create a service account just for ``gat``.
 

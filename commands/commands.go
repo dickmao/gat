@@ -153,6 +153,32 @@ func ensureBucket(c *cli.Context) error {
 	return nil
 }
 
+func gcsMount(c *cli.Context, pwd string) error {
+	bucket := gatId(c)
+	mountpoint := filepath.Join(pwd, "remote-results")
+	type runError struct {
+		error
+		output []byte
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			exec.Command("fusermount", "-u", mountpoint).Run()
+			if runerr, ok := r.(runError); ok {
+				fmt.Printf("%s\n", string(runerr.output))
+			}
+			panic(r)
+		}
+	}()
+	// `results` subdir can be mounted even if it doesn't exist yet.
+	if err := exec.Command("grep", "-qs", mountpoint+" ", "/proc/mounts").Run(); err != nil {
+		cmd := exec.Command("gcsfuse", "--implicit-dirs", "--only-dir", "results", bucket, mountpoint)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			panic(runError{err, output})
+		}
+	}
+	return nil
+}
+
 func headCommit(repo *git.Repository) (*git.Commit, error) {
 	head, err := repo.Head()
 	if err != nil {
@@ -401,8 +427,17 @@ func TestCommand() *cli.Command {
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
-			infile := inputDockerfile(c)
-			fmt.Println(infile)
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(repo.Path())
+			}
+			if err := gcsMount(c, pwd); err != nil {
+				panic(err)
+			}
 			return nil
 		},
 	}
@@ -793,7 +828,7 @@ func DockerfileCommand() *cli.Command {
 				panic(err)
 			}
 
-			baseTag := "gat/base/" + constructTag(c)
+			baseTag := "base/" + constructTag(c)
 			imageId, err := buildBaseImage(cli, baseTag, infile)
 			if err != nil {
 				panic(err)
@@ -871,8 +906,7 @@ func BuildCommand() *cli.Command {
 			outfile := maybeRegenOutfile(c, infile, func() error {
 				return c.App.RunContext(NewContext(repo, repo1, worktree, config), []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile})
 			})
-			finalTag := "gat/" + constructTag(c)
-			if err := buildImage(project, finalTag, outfile); err != nil {
+			if err := buildImage(project, constructTag(c), outfile); err != nil {
 				panic(err)
 			}
 			return nil
@@ -960,6 +994,16 @@ func RunRemoteCommand() *cli.Command {
 				panic(err)
 			}
 
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(repo.Path())
+			}
+			if err := gcsMount(c, pwd); err != nil {
+				panic(err)
+			}
+
 			bytes, newline_escaped, err := escapeCredentials()
 			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 			var diskSizeGb int64
@@ -1034,8 +1078,10 @@ func RunRemoteCommand() *cli.Command {
 				},
 			}
 			instancesService := compute.NewInstancesService(getService())
-			if _, err = instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
+			if op, err := instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
 				panic(err)
+			} else {
+				fmt.Println(op.Name)
 			}
 			return nil
 		},
