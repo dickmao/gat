@@ -80,9 +80,5 @@ jobs:
          brew list pkgconfig &>/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 brew install pkg-config
 
     - name: test
-      env:
-         LD_LIBRARY_PATH: ~/local/lib
-         DYLD_FALLBACK_LIBRARY_PATH: ~/local/lib
-         PKG_CONFIG_PATH: ~/local/lib/pkgconfig
       run: |
-        make test
+        LD_LIBRARY_PATH=~/local/lib DYLD_FALLBACK_LIBRARY_PATH=~/local/lib PKG_CONFIG_PATH=~/local/lib/pkgconfig make test
