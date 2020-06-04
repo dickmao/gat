@@ -81,4 +81,4 @@ jobs:
 
     - name: test
       run: |
-        LD_LIBRARY_PATH=~/local/lib DYLD_FALLBACK_LIBRARY_PATH=~/local/lib PKG_CONFIG_PATH=~/local/lib/pkgconfig make test
+        LD_LIBRARY_PATH=~/local/lib DYLD_LIBRARY_PATH=~/local/lib PKG_CONFIG_PATH=~/local/lib/pkgconfig make test
