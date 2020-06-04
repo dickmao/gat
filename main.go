@@ -131,15 +131,21 @@ func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.
 	}
 	config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 
-	config_loc, err := git.ConfigFindGlobal()
-	if err != nil {
+	if config_loc, err := git.ConfigFindGlobal(); err != nil {
+		if err.(*git.GitError).Code == git.ErrNotFound {
+			if config, err := git.NewConfig(); err != nil {
+				panic(err)
+			} else {
+				return repo, repo1, worktree, config
+			}
+		} else {
+			panic(err)
+		}
+	} else if config, err := git.OpenOndisk(config_loc); err != nil {
 		panic(err)
+	} else {
+		return repo, repo1, worktree, config
 	}
-	config, err := git.OpenOndisk(config_loc)
-	if err != nil {
-		panic(err)
-	}
-	return repo, repo1, worktree, config
 }
 
 func main() {
