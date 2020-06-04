@@ -83,6 +83,6 @@ jobs:
       env:
          LD_LIBRARY_PATH: ~/local/lib
          DYLD_FALLBACK_LIBRARY_PATH: ~/local/lib
-         PKG_CONFIG_PATH=~/local/lib/pkgconfig
+         PKG_CONFIG_PATH: ~/local/lib/pkgconfig
       run: |
         make test
