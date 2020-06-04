@@ -8,6 +8,7 @@ Welcome to gat’s documentation!
    :caption: Contents:
 
    install
+   usage
 
 Indices and tables
 ==================

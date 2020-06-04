@@ -43,8 +43,7 @@ The gat module
    cd gat
    make install
 
-This modifies your ``$HOME/.bashrc`` or ``$HOME/.zshrc`` so start a
-new shell or re-source your shell rc file.
+This modifies your ``$HOME/.bashrc`` or ``$HOME/.zshrc``, so start a new shell for the changes to take effect.
 
 To receive email notifications of finished jobs, you need a `SendGrid <https://signup.sendgrid.com>`_ account.  Once you receive the SendGrid API Key, you also need to run `Single Sender Verification <https://sendgrid.com/docs/ui/sending-email/sender-verification/>`_.  Then configure ``gat`` with the SendGrid profile just verified.
 
