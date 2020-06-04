@@ -37,12 +37,6 @@ jobs:
         path: ~/local
         key: ${{ runner.os }}-local-000
 
-    - uses: actions/cache@v1
-      if: startsWith(runner.os, 'macOS')
-      with:
-        path: ~/Library
-        key: ${{ runner.os }}-Library-000
-
     - name: paths
       uses: dickmao/setup-paths@master
       with:
@@ -79,10 +73,6 @@ jobs:
     - name: libgit2-macOS
       if: startsWith(runner.os, 'macOS')
       run: |
-         if [ ! -e ~/Library/libgit2.so ]; then \
-            if [ ! -e ~/Library/lib/libgit2.dylib ]; then \
-               cd ~/Library && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
-               cd ~/Library/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" && cmake --build . --target install ; \
-            fi ; \
-         fi
+         cd ~/Library && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz
+         cd ~/Library/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" && cmake --build . --target install
          cd $GITHUB_WORKSPACE && make test
