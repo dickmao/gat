@@ -54,10 +54,10 @@ jobs:
         sudo apt-get -yq update
         DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install gnutls-bin sharutils libreadline-dev libcurl4-openssl-dev
 
-    - name: dependencies
+    - name: pkgconfig
+      if: startsWith(runner.os, 'macOS')
       run: |
-        mkdir -p ~/local/bin
-        mkdir -p ~/local/lib
+         brew list pkgconfig &>/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 brew install pkg-config
 
     - name: versions
       run: |
