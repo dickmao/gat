@@ -46,7 +46,7 @@ jobs:
     - name: paths
       uses: dickmao/setup-paths@master
       with:
-        paths: local/bin
+        paths: ['local/bin']
 
     - name: apt-get
       if: startsWith(runner.os, 'Linux')
