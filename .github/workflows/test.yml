@@ -46,7 +46,10 @@ jobs:
     - uses: actions/cache@v2
       if: startsWith(runner.os, 'macOS')
       with:
-        path: [ /usr/local/lib/pkgconfig/libgit2*, /usr/local/lib/libgit2*, /usr/local/include/git2 ]
+        paths:
+        - '/usr/local/lib/pkgconfig/libgit2*'
+        - '/usr/local/lib/libgit2*'
+        - '/usr/local/include/git2'
         key: ${{ runner.os }}-libgit2-000
 
     - name: paths
