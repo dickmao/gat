@@ -2,7 +2,7 @@
  Usage
 =======
 
-As _experiments_ are implemented as git _worktrees_, we use the terms interchangeably.
+As *experiments* are implemented as git *worktrees*, we use the terms interchangeably.
 
 Creating experiments
 ====================
