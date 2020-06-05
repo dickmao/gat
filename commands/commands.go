@@ -196,7 +196,7 @@ func headCommit(repo *git.Repository) (*git.Commit, error) {
 
 func ensureApplicationDefaultCredentials() {
 	if _, ok := os.LookupEnv("GOOGLE_APPLICATION_CREDENTIALS"); !ok {
-		panic("Must currently set GOOGLE_APPLICATION_CREDENTIALS to service_account.json")
+		panic("Set GOOGLE_APPLICATION_CREDENTIALS to service_account.json")
 	}
 }
 
@@ -433,7 +433,7 @@ func TestCommand() *cli.Command {
 			if worktree != nil {
 				pwd = worktree.Path()
 			} else {
-				pwd = filepath.Dir(repo.Path())
+				pwd = filepath.Dir(filepath.Clean(repo.Path()))
 			}
 			if err := gcsMount(c, pwd); err != nil {
 				panic(err)
@@ -786,7 +786,7 @@ func RegistryCommand() *cli.Command {
 				if err != nil {
 					panic(err)
 				}
-				url.Path = filepath.Join(filepath.Dir(url.Path), justdig.Encoded())
+				url.Path = filepath.Join(filepath.Dir(filepath.Clean(url.Path)), justdig.Encoded())
 				req, err := http.NewRequest(http.MethodDelete, url.String(), nil)
 				if err != nil {
 					panic(err)
@@ -849,7 +849,7 @@ func DockerfileCommand() *cli.Command {
 			if worktree != nil {
 				pwd = worktree.Path()
 			} else {
-				pwd = filepath.Dir(repo.Path())
+				pwd = filepath.Dir(filepath.Clean(repo.Path()))
 			}
 			ioutil.WriteFile(filepath.Join(pwd, fmt.Sprintf("%s.gat", infile)), DockerfileSource(c, cli, imageId), 0644)
 			return nil
@@ -866,8 +866,9 @@ func inputDockerfile(c *cli.Context) string {
 		if worktree != nil {
 			pwd = worktree.Path()
 		} else {
-			pwd = filepath.Dir(repo.Path())
+			pwd = filepath.Dir(filepath.Clean(repo.Path()))
 		}
+
 		globs, err := filepath.Glob(filepath.Join(pwd, "Dockerfile*"))
 		if err != nil {
 			panic(err)
@@ -998,7 +999,7 @@ func RunRemoteCommand() *cli.Command {
 			if worktree != nil {
 				pwd = worktree.Path()
 			} else {
-				pwd = filepath.Dir(repo.Path())
+				pwd = filepath.Dir(filepath.Clean(repo.Path()))
 			}
 			if err := gcsMount(c, pwd); err != nil {
 				panic(err)
@@ -1121,28 +1122,20 @@ func RunLocalCommand() *cli.Command {
 			if worktree != nil {
 				pwd = worktree.Path()
 			} else {
-				pwd = filepath.Dir(repo.Path())
+				pwd = filepath.Dir(filepath.Clean(repo.Path()))
 			}
-			scommands := DockerCommands(c, project, constructTag(c), pwd, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped, filepath.Dir(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
+			scommands := DockerCommands(c, project, constructTag(c), pwd, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped, filepath.Dir(filepath.Clean(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))))
 
 			commands := strings.Split(scommands, "\n")
 			type runError struct {
 				error
-				output []byte
+				command string
+				output  []byte
 			}
 			defer func() {
 				if r := recover(); r != nil {
-					for _, str := range commands {
-						if strings.Contains(str, "docker rm") {
-							r := csv.NewReader(strings.NewReader(massageEscapes(str)))
-							r.Comma = ' '
-							if sw, err := r.Read(); err == nil {
-								exec.Command(sw[0], sw[1:]...).Run()
-							}
-						}
-					}
 					if runerr, ok := r.(runError); ok {
-						fmt.Printf("%s\n", string(runerr.output))
+						fmt.Printf("%s: %s\n", runerr.command, string(runerr.output))
 					}
 					panic(r)
 				}
@@ -1158,7 +1151,7 @@ func RunLocalCommand() *cli.Command {
 				} else {
 					cmd := exec.Command(sw[0], sw[1:]...)
 					if output, err := cmd.CombinedOutput(); err != nil {
-						panic(runError{err, output})
+						panic(runError{err, str, output})
 					}
 				}
 			}
@@ -1237,6 +1230,8 @@ func buildBaseImage(cli *client.Client, baseTag string, infile string) (string, 
 		labelFilters.Add("label", "gat="+baseTag)
 		cli.ImagesPrune(context.Background(), labelFilters)
 	}()
+
+	fmt.Fprintf(os.Stderr, "Building image... "+baseTag+"\n")
 	buildResponse, err := cli.ImageBuild(context.Background(), buildContext, types.ImageBuildOptions{
 		Tags:        []string{baseTag},
 		Remove:      true,
@@ -1249,6 +1244,7 @@ func buildBaseImage(cli *client.Client, baseTag string, infile string) (string, 
 	if err != nil {
 		panic(err)
 	}
+	fmt.Fprintf(os.Stderr, "Building image... "+baseTag+" done\n")
 	defer buildResponse.Body.Close()
 	devnull, _ := os.Open(os.DevNull)
 	devnull = os.Stderr

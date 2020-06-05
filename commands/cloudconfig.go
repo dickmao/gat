@@ -25,13 +25,14 @@ var (
 	}
 	gat1 = []string{
 		`bash -c "docker commit -c \"ENTRYPOINT $(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }})\" -c \"CMD $(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }})\" gat-sentinel-container gat-sentinel"`,
+		`bash -c "docker commit gat-sentinel-container gat-sentinel"`,
 		`docker rm gat-sentinel-container`,
-		`bash -c "docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --name gat-run-container gat-sentinel"`,
+		`bash -c "export ENTRYPOINT0=$(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }}) ; export CMD0=$(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }}) ; docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --entrypoint \"$(if [ \"$ENTRYPOINT0\" = \"null\" ] ; then echo ; else echo $ENTRYPOINT0 ; fi)\" --name gat-run-container gat-sentinel $(if [ \"$CMD0\" = \"null\" ] ; then echo ; else echo $CMD0; fi)"`,
 		`docker commit gat-run-container gat-run`,
 		`docker rm gat-run-container`,
 		`docker rmi gat-sentinel`,
 		`bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/results || true"`,
-		`bash -c "docker run --rm -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( for f in \\$(find . -not -path '*/.*' -type f -newer sentinel) ; do mkdir -p ./results/\\$(dirname \\$f) ; ln -s \\$(realpath \\$f) ./results/\\$f ; done ; ) && gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) rsync -r results $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/results\""`,
+		`bash -c "docker run --rm -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( [ \\$(realpath .) = '/' ] && export SYSDIRS='\\( -name boot -o -name dev -o -name etc -o -name home -o -name lib -o -name lib64 -o -name media -o -name mnt -o -name opt -o -name proc -o -name run -o -name sbin -o -name srv -o -name sys -o -name tmp -o -name usr -o -name var -o -name bin \\) -prune -o' ; for f in \\$(eval find . \\$SYSDIRS -not -path \\'*/.*\\' -type f -newer sentinel) ; do mkdir -p ./results/\\$(dirname \\$f) ; ln -s \\$(realpath \\$f) ./results/\\$f ; done ; ) && ( if [ -d ./results ]; then gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) rsync -r results $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/results ; fi )\""`,
 		`docker rmi gat-run`,
 	}
 )
