@@ -1,0 +1,144 @@
+#+TITLE: gat 0.0.1.dev documentation
+
+* [[file:index.html#document-index][gat]]
+  :PROPERTIES:
+  :CUSTOM_ID: gat
+  :CLASS: logo
+  :END:
+
+*** Navigation
+    :PROPERTIES:
+    :CUSTOM_ID: navigation
+    :END:
+
+Contents:
+
+- [[file:index.html#document-install][Install]]
+- [[file:index.html#document-usage][Usage]]
+
+*** Related Topics
+    :PROPERTIES:
+    :CUSTOM_ID: related-topics
+    :END:
+
+- [[file:index.html#document-index][Documentation overview]]
+
+<<welcome-to-gats-documentation>>
+* Welcome to gat's documentation![[#welcome-to-gats-documentation][¶]]
+  :PROPERTIES:
+  :CUSTOM_ID: welcome-to-gats-documentation
+  :END:
+
+[[https://github.com/dickmao/gat/actions][[[https://github.com/dickmao/gat/workflows/CI/badge.svg]]]]
+
+<<document-install>>
+
+<<install>>
+** Install[[#install][¶]]
+   :PROPERTIES:
+   :CUSTOM_ID: install
+   :END:
+
+<<google-cloud-preliminaries>>
+*** Google Cloud Preliminaries[[#google-cloud-preliminaries][¶]]
+    :PROPERTIES:
+    :CUSTOM_ID: google-cloud-preliminaries
+    :END:
+
+Follow [[https://docs.docker.com/engine/install][docker install]].
+
+Follow [[https://cloud.google.com/compute/docs/quickstart-linux][billing
+setup]].
+
+Follow
+[[https://cloud.google.com/sdk/gcloud#the_gcloud_cli_and_cloud_sdk][gcloud
+install]].
+
+Follow
+[[https://github.com/GoogleCloudPlatform/gcsfuse/blob/master/docs/installing.md][gcsfuse
+install]].
+
+Create a service account just for =gat=.
+
+#+BEGIN_EXAMPLE
+    PROJECT_ID=`gcloud config get-value project`
+    NAME=gat-service-account
+    EMAIL="${NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+    gcloud iam service-accounts create "${NAME}"
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member "serviceAccount:${EMAIL}" --role "roles/owner"
+    mkdir -p ${XDG_CONFIG_HOME:-$HOME/.config}/gcloud
+    gcloud iam service-accounts keys create ${XDG_CONFIG_HOME:-$HOME/.config}/gcloud/${NAME}.json --iam-account "${EMAIL}"
+#+END_EXAMPLE
+
+Enable some APIs:
+
+#+BEGIN_EXAMPLE
+    gcloud services enable cloudfunctions.googleapis.com
+    gcloud services enable containerregistry.googleapis.com
+    gcloud services enable pubsub.googleapis.com
+    gcloud services enable storage-api.googleapis.com
+#+END_EXAMPLE
+
+<<the-gat-module>>
+*** The gat module[[#the-gat-module][¶]]
+    :PROPERTIES:
+    :CUSTOM_ID: the-gat-module
+    :END:
+
+#+BEGIN_EXAMPLE
+    git clone git@github.com:dickmao/gat.git
+    cd gat
+    make install
+#+END_EXAMPLE
+
+This modifies your =$HOME/.bashrc= or =$HOME/.zshrc=, so start a new
+shell for the changes to take effect.
+
+To receive email notifications of finished jobs, you need a
+[[https://signup.sendgrid.com][SendGrid]] account. Once you receive the
+SendGrid API Key, you also need to run
+[[https://sendgrid.com/docs/ui/sending-email/sender-verification/][Single
+Sender Verification]]. Then configure =gat= with the SendGrid profile
+just verified.
+
+#+BEGIN_EXAMPLE
+    gat sendgrid --name [From Name] --address [From Email Address] --key [SendGrid API Key]
+#+END_EXAMPLE
+
+<<document-usage>>
+
+<<usage>>
+** Usage[[#usage][¶]]
+   :PROPERTIES:
+   :CUSTOM_ID: usage
+   :END:
+
+As _experiments_ are implemented as git _worktrees_, we use the terms
+interchangeably.
+
+<<creating-experiments>>
+*** Creating experiments[[#creating-experiments][¶]]
+    :PROPERTIES:
+    :CUSTOM_ID: creating-experiments
+    :END:
+
+Start in the directory of your git project.
+
+#+BEGIN_EXAMPLE
+    gat create eta0.3
+#+END_EXAMPLE
+
+<<indices-and-tables>>
+* Indices and tables[[#indices-and-tables][¶]]
+  :PROPERTIES:
+  :CUSTOM_ID: indices-and-tables
+  :END:
+
+- [[file:genindex.html][Index]]
+- [[file:py-modindex.html][Module Index]]
+- [[file:search.html][Search Page]]
+
+©2020, The Authors. | Powered by [[http://sphinx-doc.org/][Sphinx
+1.8.5]] & [[https://github.com/bitprophet/alabaster][Alabaster 0.7.8]]
+
+[[https://github.com/dickmao/gat][[[https://s3.amazonaws.com/github/ribbons/forkme_right_darkblue_121621.png]]]]
