@@ -24,10 +24,11 @@ var (
 		`bash -c "docker cp {{ .ServiceAccountJson }} gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/"`,
 	}
 	gat1 = []string{
-		`bash -c "docker commit -c \"ENTRYPOINT $(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }})\" -c \"CMD $(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }})\" gat-sentinel-container gat-sentinel"`,
-		`bash -c "docker commit gat-sentinel-container gat-sentinel"`,
+		`bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
 		`docker rm gat-sentinel-container`,
-		`bash -c "export ENTRYPOINT0=$(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }}) ; export CMD0=$(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }}) ; docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --entrypoint \"$(if [ \"$ENTRYPOINT0\" = \"null\" ] ; then echo ; else echo $ENTRYPOINT0 ; fi)\" --name gat-run-container gat-sentinel $(if [ \"$CMD0\" = \"null\" ] ; then echo ; else echo $CMD0; fi)"`,
+		`bash -c "ENTRYPOINT0=$(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }}) ; CMD0=$(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }}) ; ENTRYPOINT=$(if [ \"$ENTRYPOINT0\" = \"null\" ] ; then echo [] ; else echo $ENTRYPOINT0 ; fi) ; CMD=$(if [ \"$CMD0\" = \"null\" ] ; then echo [] ; else echo $CMD0 ; fi) ; printf \"FROM gat-sentinel0\nENTRYPOINT $ENTRYPOINT\nCMD $CMD\n\" | docker build -t gat-sentinel -"`,
+		`docker rmi gat-sentinel0`,
+		`bash -c "docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --name gat-run-container gat-sentinel"`,
 		`docker commit gat-run-container gat-run`,
 		`docker rm gat-run-container`,
 		`docker rmi gat-sentinel`,
