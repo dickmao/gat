@@ -1134,6 +1134,15 @@ func RunLocalCommand() *cli.Command {
 			}
 			defer func() {
 				if r := recover(); r != nil {
+					for _, str := range commands {
+						if strings.Contains(str, "docker rm") {
+							r := csv.NewReader(strings.NewReader(massageEscapes(str)))
+							r.Comma = ' '
+							if sw, err := r.Read(); err == nil {
+								exec.Command(sw[0], sw[1:]...).Run()
+							}
+						}
+					}
 					if runerr, ok := r.(runError); ok {
 						fmt.Printf("%s: %s\n", runerr.command, string(runerr.output))
 					}
