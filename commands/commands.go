@@ -171,6 +171,9 @@ func gcsMount(c *cli.Context, pwd string) error {
 	}()
 	// `results` subdir can be mounted even if it doesn't exist yet.
 	if err := exec.Command("grep", "-qs", mountpoint+" ", "/proc/mounts").Run(); err != nil {
+		if err := os.MkdirAll(mountpoint, 0755); err != nil {
+			panic(err)
+		}
 		cmd := exec.Command("gcsfuse", "--implicit-dirs", "--only-dir", "results", bucket, mountpoint)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			panic(runError{err, output})
