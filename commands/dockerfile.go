@@ -12,7 +12,7 @@ import (
 func DockerfileSource(c *cli.Context, cli *client.Client, imageId string) []byte {
 	const templ string = `FROM {{ .ImageId }}
 ENV GRANT_SUDO yes
-{{if .User}} USER root
+{{if .User}}USER root
 {{end}}RUN \
   apt-get -yq update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y apt-utils 2>&1 | grep -v "delaying" \
@@ -25,9 +25,9 @@ ENV GRANT_SUDO yes
   && wget -q https://storage.googleapis.com/pub/gsutil.tar.gz \
   && tar xfz gsutil.tar.gz -C /opt \
   && rm -f gsutil.tar.gz \
-{{if .User}} && chown -R {{ .User }} /opt/gsutil \
+{{if .User}}  && chown -R {{ .User }} /opt/gsutil \
 {{end}}  && ln -s /opt/gsutil/gsutil /usr/local/bin
-{{if .User}} USER {{ .User }}
+{{if .User}}USER {{ .User }}
 {{end}}
 `
 	var buf bytes.Buffer

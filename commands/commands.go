@@ -907,30 +907,15 @@ func BuildCommand() *cli.Command {
 			zone := c.String("zone")
 			region := c.String("region")
 			infile := inputDockerfile(c)
-			outfile := maybeRegenOutfile(c, infile, func() error {
-				return c.App.RunContext(NewContext(repo, repo1, worktree, config), []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile})
-			})
-			if err := buildImage(project, constructTag(c), outfile); err != nil {
+			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config), []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile}); err != nil {
+				panic(err)
+			}
+			if err := buildImage(project, constructTag(c), infile+".gat"); err != nil {
 				panic(err)
 			}
 			return nil
 		},
 	}
-}
-
-func maybeRegenOutfile(c *cli.Context, infile string, regen func() error) string {
-	outfile := infile + ".gat"
-	instat, err := os.Stat(infile)
-	if err != nil {
-		panic(err)
-	}
-	outstat, err := os.Stat(outfile)
-	if os.IsNotExist(err) || instat.ModTime().After(outstat.ModTime()) {
-		if err := regen(); err != nil {
-			panic(err)
-		}
-	}
-	return outfile
 }
 
 func PushCommand() *cli.Command {
@@ -1096,6 +1081,16 @@ func massageEscapes(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, `\"`, `""`), `\\`, `\`)
 }
 
+func executeShellWords(s string) ([]byte, error) {
+	r := csv.NewReader(strings.NewReader(massageEscapes(s)))
+	r.Comma = ' '
+	if sw, err := r.Read(); err == nil {
+		return exec.Command(sw[0], sw[1:]...).CombinedOutput()
+	} else {
+		return nil, err
+	}
+}
+
 func RunLocalCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "run-local",
@@ -1135,36 +1130,37 @@ func RunLocalCommand() *cli.Command {
 				command string
 				output  []byte
 			}
+			if configOut, err := executeShellWords(`gcloud config get-value pass_credentials_to_gsutil`); err != nil {
+				panic(err)
+			} else if origConfig, err := strconv.ParseBool(strings.TrimSpace(string(configOut))); origConfig {
+				executeShellWords(`gcloud config set pass_credentials_to_gsutil false`)
+				defer executeShellWords(`gcloud config set pass_credentials_to_gsutil true`)
+			} else if err != nil {
+				panic(err)
+			}
 			defer func() {
 				if r := recover(); r != nil {
 					for _, str := range commands {
 						if strings.Contains(str, "docker rm") {
-							r := csv.NewReader(strings.NewReader(massageEscapes(str)))
-							r.Comma = ' '
-							if sw, err := r.Read(); err == nil {
-								exec.Command(sw[0], sw[1:]...).Run()
-							}
+							executeShellWords(str)
 						}
 					}
+
 					if runerr, ok := r.(runError); ok {
 						fmt.Printf("%s: %s\n", runerr.command, string(runerr.output))
 					}
 					panic(r)
 				}
 			}()
+
 			for _, str := range commands {
 				if len(str) == 0 {
 					continue
 				}
-				r := csv.NewReader(strings.NewReader(massageEscapes(str)))
-				r.Comma = ' '
-				if sw, err := r.Read(); err != nil {
-					panic(err)
-				} else {
-					cmd := exec.Command(sw[0], sw[1:]...)
-					if output, err := cmd.CombinedOutput(); err != nil {
-						panic(runError{err, str, output})
-					}
+				if output, err := executeShellWords(str); err != nil {
+					panic(runError{err, str, output})
+				} else if c.Bool("debug") {
+					fmt.Printf("%s\n", string(output))
 				}
 			}
 			return nil
@@ -1742,6 +1738,10 @@ func runRemoteFlags() []cli.Flag {
 
 func runLocalFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "debug",
+			Usage: "Show outputs of docker commands",
+		},
 		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",

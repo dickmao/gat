@@ -20,9 +20,12 @@ type CloudConfig struct {
 
 var (
 	gat0 = []string{
+		`bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/caches || true"`,
 		`bash -c "docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container {{ .Tag }} -c \"touch sentinel\""`,
 		`bash -c "docker cp {{ .ServiceAccountJson }} gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/"`,
+		`bash -c "function ere_quote { sed 's/[][\\.|\$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil -m -o Credentials:gs_service_key_file=$(realpath ./$(basename {{ .ServiceAccountJson }})) cat $1 ; fi } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-sentinel-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-sentinel-container) ; do LINE=$(gsutil_cat {{ .Bucket }}/caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \") ; if [ ! -z \"$LINE\" ]; then gsutil_cat {{ .Bucket }}/caches/${LINE#* } | docker cp - gat-sentinel-container:$(dirname ${LINE% *}) ; fi ; done "`,
 	}
+	// docker commit -c "ENTRYPOINT []" does not clear entrypoint.  Use build.
 	gat1 = []string{
 		`bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
 		`docker rm gat-sentinel-container`,
@@ -33,7 +36,10 @@ var (
 		`docker rm gat-run-container`,
 		`docker rmi gat-sentinel`,
 		`bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/results || true"`,
-		`bash -c "docker run --rm -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( [ \\$(realpath .) = '/' ] && export SYSDIRS='\\( -name boot -o -name dev -o -name etc -o -name home -o -name lib -o -name lib64 -o -name media -o -name mnt -o -name opt -o -name proc -o -name run -o -name sbin -o -name srv -o -name sys -o -name tmp -o -name usr -o -name var -o -name bin \\) -prune -o' ; for f in \\$(eval find . \\$SYSDIRS -not -path \\'*/.*\\' -type f -newer sentinel) ; do mkdir -p ./results/\\$(dirname \\$f) ; ln -s \\$(realpath \\$f) ./results/\\$f ; done ; ) && ( if [ -d ./results ]; then gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) rsync -r results $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/results ; fi )\""`,
+		`bash -c "docker run --name gat-cache-container -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( [ \\$(realpath .) = '/' ] && export SYSDIRS='\\( -name boot -o -name dev -o -name etc -o -name home -o -name lib -o -name lib64 -o -name media -o -name mnt -o -name opt -o -name proc -o -name run -o -name sbin -o -name srv -o -name sys -o -name tmp -o -name usr -o -name var -o -name bin \\) -prune -o' ; for f in \\$(eval find . \\$SYSDIRS -not -path \\'*/.*\\' -type f -newer sentinel) ; do mkdir -p ./results/\\$(dirname \\$f) ; ln -s \\$(realpath \\$f) ./results/\\$f ; done ; ) && ( if [ -d ./results ]; then gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) rsync -r results $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/results ; fi ) \""`,
+		// https://stackoverflow.com/a/16951928/5132008 R. Galli
+		`bash -c "function ere_quote { sed 's/[][\\.|\$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil -m -o Credentials:gs_service_key_file=$(realpath ./$(basename {{ .ServiceAccountJson }})) cat $1 ; fi } ; function gsutil_cp { gsutil -m -o Credentials:gs_service_key_file=$(realpath ./$(basename {{ .ServiceAccountJson }})) cp $1 $2 ; } ; function gsutil_ls { [ -d {{ .Bucket }} ] && [ -e $1 ] || gsutil -m -o Credentials:gs_service_key_file=$(realpath ./$(basename {{ .ServiceAccountJson }})) ls $1 ; } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-cache-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-cache-container) ; do if ! gsutil_cat {{ .Bucket }}/caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \" ; then RAND=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 7 ; echo ''); docker cp gat-cache-container:$cache - > /var/tmp/$RAND.tar ; echo \"$cache $RAND.tar\" >> /var/tmp/manifest.$KEY ; for f in $RAND.tar manifest.$KEY ; do gsutil_cp /var/tmp/$f {{ .Bucket }}/caches/$f ; done ; rm -f /var/tmp/$RAND.tar ; fi ; done"`,
+		`docker rm gat-cache-container`,
 		`docker rmi gat-run`,
 	}
 )
