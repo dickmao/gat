@@ -1078,7 +1078,7 @@ func RunRemoteCommand() *cli.Command {
 }
 
 func massageEscapes(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, `\"`, `""`), `\\`, `\`)
+	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, `\"`, `""`), `\\`, `\`), `$$`, `$`)
 }
 
 func executeShellWords(s string) ([]byte, error) {
