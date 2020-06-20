@@ -37,7 +37,7 @@ function gat() {
   local zone
   local region
   args=()
-  commands=("create" "test" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
+  commands=("create" "test" "log" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
   while [[ $# -gt -0 ]] ; do
       key=$1
       case "$key" in
@@ -65,16 +65,20 @@ function gat() {
   zone=${zone:-$(gcloud config get-value compute/zone)}
   region=${region:-$(gcloud config get-value compute/region)}
   project=${project:-$(gcloud config get-value core/project)}
-  if [ "${#args[@]}" -eq 1 ] && [[ ! " ${commands[@]} " =~ " ${args[0]} " ]] ; then
+  [ "${#args[@]}" -eq 1 ] && [[ ! " ${commands[@]} " =~ " ${args[0]} " ]] \
+    && edit="1" \
+    || edit=""
+  if [ ! -z $edit ]; then
       args=(--project $project --zone $zone --region $region edit "${args[@]}")
+      output=$(GOOGLE_APPLICATION_CREDENTIALS=${GAT_APPLICATION_CREDENTIALS} $GOPATH/bin/gat "${args[@]}")
+      if [ $? = 7 ]; then
+        eval "$output"
+      else
+        echo "$output"
+        return $?
+      fi
   else
       args=(--project $project --zone $zone --region $region "${args[@]}")
-  fi
-  output=$(GOOGLE_APPLICATION_CREDENTIALS=${GAT_APPLICATION_CREDENTIALS} $GOPATH/bin/gat "${args[@]}")
-  if [ $? = 7 ]; then
-    eval "$output"
-  else
-    echo "$output"
-    return $?
+      GOOGLE_APPLICATION_CREDENTIALS=${GAT_APPLICATION_CREDENTIALS} $GOPATH/bin/gat "${args[@]}"
   fi
 }

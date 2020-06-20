@@ -55,6 +55,7 @@ func newApp() *cli.App {
 	app.Commands = []*cli.Command{
 		commands.CreateCommand(),
 		commands.RegistryCommand(),
+		commands.LogCommand(),
 		commands.TestCommand(),
 		commands.SendgridCommand(),
 		commands.RunRemoteCommand(),

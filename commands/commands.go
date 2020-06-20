@@ -55,6 +55,7 @@ import (
 	"google.golang.org/api/container/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iam/v1"
+	"google.golang.org/api/logging/v2"
 	"google.golang.org/api/option"
 	"google.golang.org/api/pubsub/v1"
 )
@@ -425,21 +426,121 @@ func escapeCredentials() ([]byte, string, error) {
 	return bytes, newline_escaped, nil
 }
 
+func printLogEntries(term *bool, lastInsertId *string) func(r *logging.ListLogEntriesResponse) error {
+	return func(r *logging.ListLogEntriesResponse) error {
+		myPayload := struct {
+			Message          string `json:"MESSAGE"`
+			Priority         string `json:"PRIORITY"`
+			SyslogFacility   string `json:"SYSLOG_FACILITY"`
+			SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
+		}{}
+		f := bufio.NewWriter(os.Stdout)
+		defer f.Flush()
+		var newLastInsertId string
+		for _, entry := range r.Entries {
+			if len(newLastInsertId) == 0 && len(*lastInsertId) > 0 {
+				if entry.InsertId == *lastInsertId {
+					newLastInsertId = *lastInsertId
+				}
+				continue
+			}
+			newLastInsertId = entry.InsertId
+			if err := json.Unmarshal(entry.JsonPayload, &myPayload); err != nil {
+				return err
+			}
+			if !*term {
+				*term = strings.HasPrefix(myPayload.Message, "gat1.service: Consumed")
+			}
+			f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
+		}
+		*lastInsertId = newLastInsertId
+		return nil
+	}
+}
+
+func recordTargetId(lastInstanceId *uint64) func(ol *compute.OperationList) error {
+	return func(ol *compute.OperationList) error {
+		for _, op := range ol.Items {
+			*lastInstanceId = op.TargetId
+		}
+		return nil
+	}
+}
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(filepath.Clean(repo.Path()))
-			}
-			if err := gcsMount(c, pwd); err != nil {
+			return nil
+		},
+	}
+}
+
+func LogCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "log",
+		Flags: logFlags(),
+		Action: func(c *cli.Context) error {
+			computeService, err := compute.NewService(context.Background(), option.WithScopes(compute.ComputeReadonlyScope))
+			if err != nil {
 				panic(err)
+			}
+			filter := []string{}
+			filter = append(filter, fmt.Sprintf("(operationType = \"insert\")"))
+			serviceAccountBytes, _, _ := escapeCredentials()
+			var serviceAccount ServiceAccount
+			json.Unmarshal(serviceAccountBytes, &serviceAccount)
+			filter = append(filter, fmt.Sprintf("(user = \"%s\")", serviceAccount.Client_email))
+			project := c.String("project")
+			zone := c.String("zone")
+			var lastInstanceId uint64
+			for follow := true; lastInstanceId == 0 && follow; follow = c.Bool("follow") {
+				if err := compute.NewZoneOperationsService(computeService).List(project, zone).Filter(strings.Join(filter, " AND ")).Pages(context.Background(), recordTargetId(&lastInstanceId)); err != nil {
+					panic(err)
+				}
+			}
+			loggingService, err := logging.NewService(context.Background(), option.WithScopes(logging.LoggingReadScope))
+			if err != nil {
+				panic(err)
+			}
+			filter = []string{}
+			filter = append(filter, fmt.Sprintf("logName = \"projects/%s/logs/gat\"", project))
+			filter = append(filter, fmt.Sprintf("resource.labels.instance_id = \"%d\"", lastInstanceId))
+			filter = append(filter, fmt.Sprintf("resource.type = \"gce_instance\""))
+			freshness := c.String("freshness")
+			if len(freshness) == 0 {
+				freshness = "24h"
+			}
+			dur, err := time.ParseDuration(freshness)
+			if err != nil {
+				panic(err)
+			} else if dur > 0 {
+				dur = -dur
+			}
+			after := time.Now().Add(dur)
+			if err != nil {
+				panic(err)
+			}
+			var term bool
+			var lastInsertId string
+			for {
+				if err := logging.NewEntriesService(loggingService).List(&logging.ListLogEntriesRequest{
+					Filter:        strings.Join(append(filter, fmt.Sprintf("timestamp >= \"%s\"", after.Format(time.RFC3339))), " AND "),
+					ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
+				}).Pages(context.Background(), printLogEntries(&term, &lastInsertId)); err != nil {
+					panic(err)
+				}
+				if !term && c.Bool("follow") {
+					// delay between log entry and fluentd's
+					// recording is ~5s so only looking after
+					// `after` would miss entries in last
+					// five seconds.
+					after = time.Now().Add(-time.Minute)
+					time.Sleep(1200 * time.Millisecond)
+				} else {
+					break
+				}
 			}
 			return nil
 		},
@@ -481,9 +582,6 @@ func SendgridCommand() *cli.Command {
 			project := c.String("project")
 			topic := url.Values{}
 			topic.Set("topic", "compute.googleapis.com/activity_log")
-			serviceAccountBytes, _, _ := escapeCredentials()
-			var serviceAccount ServiceAccount
-			json.Unmarshal(serviceAccountBytes, &serviceAccount)
 			client, err := logadmin.NewClient(context.Background(), project)
 			if err != nil {
 				panic(err)
@@ -976,9 +1074,9 @@ func RunRemoteCommand() *cli.Command {
 			if err != nil {
 				panic(err)
 			}
-			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
-			config1.SetString("gat.last_project", project)
-
+			if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
+				panic(err)
+			}
 			if err = ensureBucket(c); err != nil {
 				panic(err)
 			}
@@ -995,28 +1093,34 @@ func RunRemoteCommand() *cli.Command {
 
 			bytes, newline_escaped, err := escapeCredentials()
 			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
-			var diskSizeGb int64
-			tag := constructTag(c)
-			if images, err := getImages(tag); err != nil || len(images) == 0 {
-				if len(images) == 0 {
-					panic(fmt.Sprintf("Image tagged %s not found", tag))
+			diskSizeGb := c.Int64("disksizegb")
+			if diskSizeGb <= 0 {
+				tag := constructTag(c)
+				if images, err := getImages(tag); err != nil || len(images) == 0 {
+					if len(images) == 0 {
+						panic(fmt.Sprintf("Image tagged %s not found", tag))
+					} else {
+						panic(err)
+					}
 				} else {
-					panic(err)
-				}
-			} else {
-				diskSizeGb = 6 + images[0].Size/units.GiB
-				if diskSizeGb < 8 {
-					diskSizeGb = 8
+					diskSizeGb = 6 + images[0].Size/units.GiB
+					if diskSizeGb < 8 {
+						diskSizeGb = 8
+					}
 				}
 			}
 			shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 			var serviceAccount ServiceAccount
 			json.Unmarshal(bytes, &serviceAccount)
 			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
+			machine := c.String("machine")
+			if len(machine) == 0 {
+				machine = "e2-standard-2"
+			}
 			instance := &compute.Instance{
 				Name:        gatId(c),
 				Description: "gat compute instance",
-				MachineType: prefix + "/zones/" + zone + "/machineTypes/n1-standard-1",
+				MachineType: prefix + "/zones/" + zone + "/machineTypes/" + machine,
 				Metadata: &compute.Metadata{
 					Items: []*compute.MetadataItems{
 						{
@@ -1039,7 +1143,7 @@ func RunRemoteCommand() *cli.Command {
 						Type:       "PERSISTENT",
 						InitializeParams: &compute.AttachedDiskInitializeParams{
 							// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
-							SourceImage: "projects/api-project-421333809285/global/images/cos-81-12871-96-202004291659",
+							SourceImage: "projects/api-project-421333809285/global/images/cos-81-12871-96-202006181203",
 							DiskSizeGb:  diskSizeGb,
 						},
 					},
@@ -1727,11 +1831,19 @@ func runRemoteFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{
 			Name:  "noshutdown",
-			Usage: "do not execute shutdown.service",
+			Usage: "Do not execute shutdown.service",
+		},
+		&cli.Int64Flag{
+			Name:  "disksizegb",
+			Usage: "Attached disk size in GiB",
 		},
 		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
+		},
+		&cli.StringFlag{
+			Name:  "machine",
+			Usage: "Machine type",
 		},
 	}
 }
@@ -1777,13 +1889,22 @@ func buildFlags() []cli.Flag {
 	}
 }
 
-func testFlags() []cli.Flag {
+func logFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:  "dockerfile",
-			Usage: "Test",
+			Name:  "freshness",
+			Usage: "An expression parseable by time.ParseDuration",
+		},
+		&cli.BoolFlag{
+			Name:    "follow",
+			Aliases: []string{"f"},
+			Usage:   "tail -f",
 		},
 	}
+}
+
+func testFlags() []cli.Flag {
+	return []cli.Flag{}
 }
 
 func waitOp(s *cloudfunctions.Service, name string, sec int, ms int) (bool, *cloudfunctions.Status) {
