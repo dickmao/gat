@@ -92,6 +92,7 @@ jobs:
             fi ; \
             cd ~/local/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/local && cmake --build . --target install ; \
          fi
+         cd $GITHUB_WORKSPACE
          LD_LIBRARY_PATH=~/local/lib PKG_CONFIG_PATH=~/local/lib/pkgconfig make test
 
     - name: libgit2-macOS
