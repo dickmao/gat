@@ -156,7 +156,7 @@ func ensureBucket(c *cli.Context) error {
 
 func gcsMount(c *cli.Context, pwd string) error {
 	bucket := gatId(c)
-	mountpoint := filepath.Join(pwd, "remote-results")
+	mountpoint := filepath.Join(pwd, "run-remote")
 	type runError struct {
 		error
 		output []byte
@@ -175,7 +175,7 @@ func gcsMount(c *cli.Context, pwd string) error {
 		if err := os.MkdirAll(mountpoint, 0755); err != nil {
 			panic(err)
 		}
-		cmd := exec.Command("gcsfuse", "--implicit-dirs", "--only-dir", "results", bucket, mountpoint)
+		cmd := exec.Command("gcsfuse", "--implicit-dirs", "--file-mode", "444", "--only-dir", "run-local", bucket, mountpoint)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			panic(runError{err, output})
 		}
@@ -299,6 +299,9 @@ func branchReference(c *cli.Context) (*git.Reference, error) {
 	branch_repo := getBranchRepo(c)
 	head, err := branch_repo.Head()
 	if err != nil {
+		if git.IsErrorClass(err, git.ErrClassReference) {
+			fmt.Fprintf(os.Stderr, "branchReference: needs at least one commit\n")
+		}
 		panic(err)
 	}
 	defer head.Free()
@@ -426,7 +429,7 @@ func escapeCredentials() ([]byte, string, error) {
 	return bytes, newline_escaped, nil
 }
 
-func printLogEntries(term *bool, lastInsertId *string) func(r *logging.ListLogEntriesResponse) error {
+func printLogEntries(qFirst bool, term *bool, lastInsertId *string) func(r *logging.ListLogEntriesResponse) error {
 	return func(r *logging.ListLogEntriesResponse) error {
 		myPayload := struct {
 			Message          string `json:"MESSAGE"`
@@ -438,7 +441,7 @@ func printLogEntries(term *bool, lastInsertId *string) func(r *logging.ListLogEn
 		defer f.Flush()
 		var newLastInsertId string
 		for _, entry := range r.Entries {
-			if len(newLastInsertId) == 0 && len(*lastInsertId) > 0 {
+			if !qFirst && len(newLastInsertId) == 0 && len(*lastInsertId) > 0 {
 				if entry.InsertId == *lastInsertId {
 					newLastInsertId = *lastInsertId
 				}
@@ -524,11 +527,11 @@ func LogCommand() *cli.Command {
 			}
 			var term bool
 			var lastInsertId string
-			for {
+			for qFirst := true; ; qFirst = false {
 				if err := logging.NewEntriesService(loggingService).List(&logging.ListLogEntriesRequest{
 					Filter:        strings.Join(append(filter, fmt.Sprintf("timestamp >= \"%s\"", after.Format(time.RFC3339))), " AND "),
 					ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-				}).Pages(context.Background(), printLogEntries(&term, &lastInsertId)); err != nil {
+				}).Pages(context.Background(), printLogEntries(qFirst, &term, &lastInsertId)); err != nil {
 					panic(err)
 				}
 				if !term && c.Bool("follow") {
@@ -1117,6 +1120,18 @@ func RunRemoteCommand() *cli.Command {
 			if len(machine) == 0 {
 				machine = "e2-standard-2"
 			}
+			gpuCount := c.Int64("gpus")
+			acceleratorConfigs := []*compute.AcceleratorConfig{}
+			if gpuCount > 0 {
+				gpuType := c.String("gpu")
+				if len(gpuType) == 0 {
+					gpuType = "nvidia-tesla-t4"
+				}
+				acceleratorConfigs = append(acceleratorConfigs, &compute.AcceleratorConfig{
+					AcceleratorCount: gpuCount,
+					AcceleratorType:  prefix + "/zones/" + zone + "/acceleratorTypes/" + gpuType,
+				})
+			}
 			instance := &compute.Instance{
 				Name:        gatId(c),
 				Description: "gat compute instance",
@@ -1169,6 +1184,7 @@ func RunRemoteCommand() *cli.Command {
 						},
 					},
 				},
+				GuestAccelerators: acceleratorConfigs,
 			}
 			instancesService := compute.NewInstancesService(getService())
 			if op, err := instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
@@ -1462,7 +1478,6 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 		}
 		panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
 	}
-
 	commit, err := headCommit(repo)
 	if err != nil {
 		if stash_oid != nil {
@@ -1497,6 +1512,17 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 			repo.Stashes.Pop(0, opts)
 			panic(err)
 		}
+		if err = idx.AddAll([]string{"."}, git.IndexAddDefault, nil); err != nil {
+			repo.Stashes.Pop(0, opts)
+			panic(err)
+		}
+		// for i := uint(0); i < idx.EntryCount(); i += 1 {
+		// 	entry, err := idx.EntryByIndex(i)
+		// 	if err != nil {
+		// 		panic(err)
+		// 	}
+		// 	fmt.Fprintf(os.Stderr, "%s\n", entry.Path)
+		// }
 		treeID, _ := idx.WriteTree()
 		tree, err := repo.LookupTree(treeID)
 		if err != nil {
@@ -1630,18 +1656,14 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	if stash_oid != nil {
 		repo2, err := git.OpenRepository(filepath.Clean(repo1_worktree.Path()))
 		if err != nil {
-			if stash_oid != nil {
-				worktree.Repo.Stashes.Pop(0, opts)
-			}
+			worktree.Repo.Stashes.Pop(0, opts)
 			panic(err)
 		}
 		defer repo2.Free()
 
 		new_worktree, err := repo2.NewWorktreeFromSubrepository()
 		if err != nil {
-			if stash_oid != nil {
-				worktree.Repo.Stashes.Pop(0, opts)
-			}
+			worktree.Repo.Stashes.Pop(0, opts)
 			panic(err)
 		}
 		defer new_worktree.Free()
@@ -1661,9 +1683,13 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 		if err = idx.UpdateAll([]string{"."}, nil); err != nil {
 			panic(err)
 		}
+		if err = idx.AddAll([]string{"."}, git.IndexAddDefault, nil); err != nil {
+			panic(err)
+		}
 		if err = idx.Write(); err != nil {
 			panic(err)
 		}
+
 		treeID, _ := idx.WriteTree()
 		tree, err := new_worktree.Repo.LookupTree(treeID)
 		if err != nil {
@@ -1749,6 +1775,18 @@ func ListCommand() *cli.Command {
 	}
 }
 
+func MasterCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "master",
+		Flags: masterFlags(),
+		Action: func(c *cli.Context) error {
+			processCpuProfileFlag(c)
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			return cli.NewExitError(fmt.Sprintf("cd %s", filepath.Clean(repo.Workdir())), 7)
+		},
+	}
+}
+
 func EditCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "edit",
@@ -1807,6 +1845,16 @@ func editFlags() []cli.Flag {
 	}
 }
 
+func masterFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:    "cpuprofile",
+			Usage:   "write cpu profile to file",
+			EnvVars: []string{"CPU_PROFILE"},
+		},
+	}
+}
+
 func sendgridFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
@@ -1837,9 +1885,17 @@ func runRemoteFlags() []cli.Flag {
 			Name:  "disksizegb",
 			Usage: "Attached disk size in GiB",
 		},
+		&cli.Int64Flag{
+			Name:  "gpus",
+			Usage: "Add this number of gpus",
+		},
 		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
+		},
+		&cli.StringFlag{
+			Name:  "gpu",
+			Usage: "Gpu name from acceleratorTypes, e.g., nvidia-tesla-t4",
 		},
 		&cli.StringFlag{
 			Name:  "machine",

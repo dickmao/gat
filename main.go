@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	commands "github.com/dickmao/gat/commands"
 
@@ -53,6 +54,7 @@ func newApp() *cli.App {
 		},
 	}
 	app.Commands = []*cli.Command{
+		commands.MasterCommand(),
 		commands.CreateCommand(),
 		commands.RegistryCommand(),
 		commands.LogCommand(),
@@ -112,13 +114,8 @@ func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.
 			panic(err)
 		}
 	}
-
-	ignored, err := repo.IsPathIgnored(".gat")
-	if err != nil {
-		panic(err)
-	}
-	if !(ignored) {
-		if err = repo.AddIgnoreRule(".gat"); err != nil {
+	for _, r := range []*git.Repository{repo, repo1} {
+		if err = r.AddIgnoreRule(strings.Join([]string{".gat", "run-local", "run-remote"}, "\n")); err != nil {
 			panic(err)
 		}
 	}

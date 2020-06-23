@@ -4,6 +4,12 @@
 
 As *experiments* are implemented as git *worktrees*, we use the terms interchangeably.
 
+GPUs
+====
+
+*Nota bene* you must explicitly `request a quota increase <https://cloud.google.com/compute/quotas#requesting_additional_quota>`_.
+
+
 Creating experiments
 ====================
 
