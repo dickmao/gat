@@ -6,8 +6,6 @@ gat -- Git-based Experiment Management |build-status|
 
 Given a debian-based Dockerfile, `gat` runs the build on a preemptible Google Compute Engine (gce) instance and retrieves the results from a Google Cloud Storage (gcs) bucket.
 
-::
-
 
 
 .. |build-status|

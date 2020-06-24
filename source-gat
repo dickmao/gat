@@ -64,8 +64,11 @@ function gat() {
       esac
   done
   zone=${zone:-$(gcloud config get-value compute/zone)}
+  if [ -z $zone ]; then return -1; fi
   region=${region:-$(gcloud config get-value compute/region)}
+  if [ -z $region ]; then return -1; fi
   project=${project:-$(gcloud config get-value core/project)}
+  if [ -z $project ]; then return -1; fi
   cmd=""
   if [ "${#args[@]}" -eq 1 ] && [[ ! " ${commands[@]} " =~ " ${args[0]} " ]]; then
       cmd="edit"
