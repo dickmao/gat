@@ -82,6 +82,7 @@ const repoKey key = 0
 const repo1Key key = 1
 const worktreeKey key = 2
 const configKey key = 3
+const masterWorktree string = "master"
 
 var (
 	resourceManagerService     *cloudresourcemanager.Service
@@ -1471,6 +1472,12 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 			panic(err)
 		}
 	}
+	if branchName == masterWorktree {
+		if stash_oid != nil {
+			repo.Stashes.Pop(0, opts)
+		}
+		panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
+	}
 	if old_branch, err := repo1.LookupBranch(branchName, git.BranchLocal); err == nil {
 		defer old_branch.Free()
 		if stash_oid != nil {
@@ -1609,7 +1616,12 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 			panic(err)
 		}
 	}
-
+	if branchName == masterWorktree {
+		if stash_oid != nil {
+			worktree.Repo.Stashes.Pop(0, opts)
+		}
+		panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
+	}
 	if old_branch, err := repo1.LookupBranch(branchName, git.BranchLocal); err == nil {
 		defer old_branch.Free()
 		if stash_oid != nil {
@@ -1800,6 +1812,16 @@ func EditCommand() *cli.Command {
 				if worktreeName, err = promptWorktree("Worktree: "); err != nil {
 					panic(err)
 				}
+			}
+			if worktreeName == masterWorktree {
+				repo := c.Context.Value(repoKey).(*git.Repository)
+				worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+				config := c.Context.Value(configKey).(*git.Config)
+				project := c.String("project")
+				zone := c.String("zone")
+				region := c.String("region")
+				return c.App.RunContext(NewContext(repo, repo1, worktree, config),
+					[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "master"})
 			}
 			_, err := repo1.LookupBranch(worktreeName, git.BranchLocal)
 			if err != nil {
