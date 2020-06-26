@@ -82,7 +82,7 @@ const repoKey key = 0
 const repo1Key key = 1
 const worktreeKey key = 2
 const configKey key = 3
-const masterWorktree string = "master"
+const MasterWorktree string = "master"
 
 var (
 	resourceManagerService     *cloudresourcemanager.Service
@@ -1472,7 +1472,7 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 			panic(err)
 		}
 	}
-	if branchName == masterWorktree {
+	if branchName == MasterWorktree {
 		if stash_oid != nil {
 			repo.Stashes.Pop(0, opts)
 		}
@@ -1616,7 +1616,7 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 			panic(err)
 		}
 	}
-	if branchName == masterWorktree {
+	if branchName == MasterWorktree {
 		if stash_oid != nil {
 			worktree.Repo.Stashes.Pop(0, opts)
 		}
@@ -1813,7 +1813,7 @@ func EditCommand() *cli.Command {
 					panic(err)
 				}
 			}
-			if worktreeName == masterWorktree {
+			if worktreeName == MasterWorktree {
 				repo := c.Context.Value(repoKey).(*git.Repository)
 				worktree := c.Context.Value(worktreeKey).(*git.Worktree)
 				config := c.Context.Value(configKey).(*git.Config)

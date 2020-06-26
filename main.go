@@ -93,6 +93,9 @@ func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.
 	if err != nil {
 		panic(err)
 	}
+	if _, err := repo.Head(); err != nil {
+		panic(err)
+	}
 	worktree, err := repo.NewWorktreeFromSubrepository()
 	if err == nil {
 		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())))
@@ -107,6 +110,21 @@ func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.
 		repo1, err = git.Clone(repo.Path(), gat_path, &git.CloneOptions{Bare: true})
 		if err != nil {
 			panic(err)
+		} else {
+			ref, err := repo1.Head()
+			if err != nil {
+				panic(err)
+			}
+			defer ref.Free()
+			options, err := git.NewWorktreeAddOptions(1, 0, ref)
+			if err != nil {
+				panic(err)
+			}
+			master, err := repo1.AddWorktree(commands.MasterWorktree, filepath.Join(repo1.Path(), commands.MasterWorktree), options)
+			if err != nil {
+				panic(err)
+			}
+			defer master.Free()
 		}
 	} else {
 		repo1, err = git.OpenRepository(filepath.Clean(git_dir1))
