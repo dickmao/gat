@@ -10,6 +10,7 @@ endef
 export VERSIONGO
 .PHONY: version/version.go
 version/version.go:
+	@mkdir -p version
 	echo "$$VERSIONGO" > $@
 
 .PHONY: compile
@@ -65,8 +66,9 @@ lint:
 	./scripts/lint.sh
 
 .PHONY: test
-test:
+test: compile
 	go test -race -test.timeout 120s
+	rm -f ./gat
 
 .PHONY: test-with-coverage
 test-with-coverage:
