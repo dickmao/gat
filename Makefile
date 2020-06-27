@@ -1,7 +1,23 @@
+export VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo 0.0.2)
 XDG_CONFIG_HOME ?= $(HOME)/.config
 
+define VERSIONGO
+package version
+
+const Version string = "$(VERSION)"
+endef
+
+export VERSIONGO
+.PHONY: version/version.go
+version/version.go:
+	echo "$$VERSIONGO" > $@
+
+.PHONY: compile
+compile: version/version.go
+	go build
+
 .PHONY: install
-install: $(XDG_CONFIG_HOME)/gat/source-gat bashrc
+install: version/version.go $(XDG_CONFIG_HOME)/gat/source-gat bashrc
 	go install -v
 
 $(XDG_CONFIG_HOME)/gat/source-gat: source-gat
@@ -55,3 +71,7 @@ test:
 .PHONY: test-with-coverage
 test-with-coverage:
 	ginkgo -r -cover -race -skipPackage="testdata"
+
+.PHONY: docs/%
+docs/%:
+	$(MAKE) -C docs $(@F)

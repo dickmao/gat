@@ -7,6 +7,7 @@ _gat_completions()
     TREES1="$(for f in $(ls -d .gat/worktrees/* 2>/dev/null ) ; do basename $f ; done ;)"
     TREES2="$(for f in $(ls -d ../worktrees/* 2>/dev/null ) ; do basename $f ; done ;)"
     OPTS="master
+          version
           create
           list
           build
@@ -38,7 +39,7 @@ function gat() {
   local zone
   local region
   args=()
-  commands=("master" "create" "test" "log" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
+  commands=("master" "version" "create" "test" "log" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
   while [[ $# -gt -0 ]] ; do
       key=$1
       case "$key" in

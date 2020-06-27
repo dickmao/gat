@@ -2,4 +2,5 @@
 .gat
 sendgrid.env
 docs/build
+docs/source/conf.py
 venv

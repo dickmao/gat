@@ -26,6 +26,7 @@ import (
 
 	"cloud.google.com/go/logging/logadmin"
 	"cloud.google.com/go/storage"
+	"github.com/dickmao/gat/version"
 	git "github.com/dickmao/git2go/v31"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/reference"
@@ -476,6 +477,16 @@ func TestCommand() *cli.Command {
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
+			return nil
+		},
+	}
+}
+
+func VersionCommand() *cli.Command {
+	return &cli.Command{
+		Name: "version",
+		Action: func(c *cli.Context) error {
+			fmt.Println(version.Version)
 			return nil
 		},
 	}

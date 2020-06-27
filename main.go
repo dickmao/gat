@@ -59,6 +59,7 @@ func newApp() *cli.App {
 		commands.RegistryCommand(),
 		commands.LogCommand(),
 		commands.TestCommand(),
+		commands.VersionCommand(),
 		commands.SendgridCommand(),
 		commands.RunRemoteCommand(),
 		commands.RunLocalCommand(),
