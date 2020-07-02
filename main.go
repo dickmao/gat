@@ -47,13 +47,17 @@ func getRepo(path string, config *git.Config) (*git.Repository, error) {
 				defer idx.Free()
 				idx.UpdateAll([]string{"."}, nil)
 				idx.AddAll([]string{"."}, git.IndexAddDefault, nil)
-				name, _ := config.LookupString("user.name")
-				email, err3 := config.LookupString("user.email")
+				var name, email string
+				if name, err = config.LookupString("user.name"); err != nil {
+					name = "gat"
+				}
+				if email, err = config.LookupString("user.email"); err != nil {
+					email = "none"
+				}
 				sig := &git.Signature{
 					Name:  name,
 					Email: email,
 					When:  time.Now()}
-				fmt.Println("HULA", sig, err3)
 				if treeID, err := idx.WriteTree(); err != nil {
 					panic(err)
 				} else if tree, err := repo.LookupTree(treeID); err != nil {
