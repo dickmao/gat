@@ -48,11 +48,12 @@ func getRepo(path string, config *git.Config) (*git.Repository, error) {
 				idx.UpdateAll([]string{"."}, nil)
 				idx.AddAll([]string{"."}, git.IndexAddDefault, nil)
 				name, _ := config.LookupString("user.name")
-				email, _ := config.LookupString("user.email")
+				email, err3 := config.LookupString("user.email")
 				sig := &git.Signature{
 					Name:  name,
 					Email: email,
 					When:  time.Now()}
+				fmt.Println("HULA", sig, err3)
 				if treeID, err := idx.WriteTree(); err != nil {
 					panic(err)
 				} else if tree, err := repo.LookupTree(treeID); err != nil {
@@ -61,11 +62,11 @@ func getRepo(path string, config *git.Config) (*git.Repository, error) {
 					if err := idx.Write(); err != nil {
 						panic(err)
 					}
-					repo.CreateCommit("HEAD", sig, sig, fmt.Sprintf("gat create %s", commands.MasterWorktree), tree)
+					if _, err := repo.CreateCommit("HEAD", sig, sig, fmt.Sprintf("gat create %s", commands.MasterWorktree), tree); err != nil {
+						panic(err)
+					}
 				}
 			}
-		} else {
-			fmt.Println("HULA", err)
 		}
 	}
 	return repo, reterr
