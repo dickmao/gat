@@ -64,6 +64,8 @@ func getRepo(path string, config *git.Config) (*git.Repository, error) {
 					repo.CreateCommit("HEAD", sig, sig, fmt.Sprintf("gat create %s", commands.MasterWorktree), tree)
 				}
 			}
+		} else {
+			fmt.Println("HULA", err)
 		}
 	}
 	return repo, reterr
