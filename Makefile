@@ -1,5 +1,7 @@
 export VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo 0.0.2)
 XDG_CONFIG_HOME ?= $(HOME)/.config
+XDG_DATA_HOME ?= $(HOME)/.local/share
+export PKG_CONFIG_PATH := $(XDG_DATA_HOME)/../lib/pkgconfig:$(PKG_CONFIG_PATH)
 
 define VERSIONGO
 package version
