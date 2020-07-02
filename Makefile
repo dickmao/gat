@@ -1,7 +1,9 @@
 export VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo 0.0.2)
 XDG_CONFIG_HOME ?= $(HOME)/.config
 XDG_DATA_HOME ?= $(HOME)/.local/share
-export PKG_CONFIG_PATH := $(XDG_DATA_HOME)/../lib/pkgconfig:$(PKG_CONFIG_PATH)
+LIBDIR := $(XDG_DATA_HOME)/../lib
+PKG_CONFIG_PATH ?= $(LIBDIR)/pkgconfig
+export PKG_CONFIG_PATH
 
 define VERSIONGO
 package version
@@ -10,17 +12,34 @@ const Version string = "$(VERSION)"
 endef
 
 export VERSIONGO
-.PHONY: version/version.go
-version/version.go:
-	@mkdir -p version
-	echo "$$VERSIONGO" > $@
 
 .PHONY: compile
 compile: version/version.go
 	go build
 
+$(LIBDIR)/libgit2.so:
+	$(eval LIBGIT2_DOWNLOAD:=$(shell curl -sSL https://api.github.com/repos/libgit2/libgit2/releases/latest | grep 'browser_download_url.*tar.gz"' | cut -d : -f 2,3 | tr -d \"))
+	$(eval LIBGIT2_SLUG:=$(subst .tar.gz,,$(shell basename $(LIBGIT2_DOWNLOAD))))
+	curl -sSL $(LIBGIT2_DOWNLOAD) | tar xzf -
+	mkdir -p $(LIBGIT2_SLUG)/build
+	cd $(LIBGIT2_SLUG)/build ; \
+	  cmake .. \
+	  -DTHREADSAFE=ON \
+	  -DBUILD_CLAR=OFF \
+	  -DBUILD_SHARED_LIBS=ON \
+	  -DREGEX_BACKEND=builtin \
+	  -DCMAKE_C_FLAGS=-fPIC \
+	  -DCMAKE_BUILD_TYPE="RelWithDebInfo" \
+	  -DCMAKE_INSTALL_PREFIX=$(LIBDIR)/.. ; \
+	  cmake --build . --target install
+
+.PHONY: version/version.go
+version/version.go:
+	@mkdir -p version
+	echo "$$VERSIONGO" > $@
+
 .PHONY: install
-install: version/version.go $(XDG_CONFIG_HOME)/gat/source-gat bashrc
+install: version/version.go $(LIBDIR)/libgit2.so $(XDG_CONFIG_HOME)/gat/source-gat bashrc
 	go install -v
 
 $(XDG_CONFIG_HOME)/gat/source-gat: source-gat
