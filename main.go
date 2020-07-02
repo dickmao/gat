@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	commands "github.com/dickmao/gat/commands"
 
@@ -14,19 +15,58 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-func getRepo(path string) (*git.Repository, error) {
+func getRepo(path string, config *git.Config) (*git.Repository, error) {
+	var (
+		repo   *git.Repository
+		reterr error
+	)
 	git_dir, err := git.Discover(path, true, nil)
 	if err != nil {
-		panic(err)
-	}
-	if filepath.Base(filepath.Clean(git_dir)) == ".gat" {
-		git_dir, err = git.Discover(filepath.Dir(filepath.Clean(git_dir)),
-			true, nil)
-		if err != nil {
+		if err.(*git.GitError).Code == git.ErrNotFound {
+			repo, reterr = git.InitRepository(path, false)
+		} else {
 			panic(err)
 		}
+	} else {
+		if filepath.Base(filepath.Clean(git_dir)) == ".gat" {
+			git_dir, err = git.Discover(filepath.Dir(filepath.Clean(git_dir)), true, nil)
+			if err != nil {
+				panic(err)
+			}
+		}
+		repo, reterr = git.OpenRepository(filepath.Clean(git_dir))
 	}
-	return git.OpenRepository(filepath.Clean(git_dir))
+
+	if reterr == nil {
+		head, err := repo.Head()
+		if head != nil {
+			defer head.Free()
+		}
+		if err != nil && git.IsErrorClass(err, git.ErrClassReference) {
+			if idx, err := repo.Index(); err == nil {
+				defer idx.Free()
+				idx.UpdateAll([]string{"."}, nil)
+				idx.AddAll([]string{"."}, git.IndexAddDefault, nil)
+				name, _ := config.LookupString("user.name")
+				email, _ := config.LookupString("user.email")
+				sig := &git.Signature{
+					Name:  name,
+					Email: email,
+					When:  time.Now()}
+				if treeID, err := idx.WriteTree(); err != nil {
+					panic(err)
+				} else if tree, err := repo.LookupTree(treeID); err != nil {
+					panic(err)
+				} else {
+					if err := idx.Write(); err != nil {
+						panic(err)
+					}
+					repo.CreateCommit("HEAD", sig, sig, fmt.Sprintf("gat create %s", commands.MasterWorktree), tree)
+				}
+			}
+		}
+	}
+	return repo, reterr
 }
 
 func newApp() *cli.App {
@@ -90,16 +130,29 @@ func newApp() *cli.App {
 }
 
 func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.Config) {
-	repo, err := getRepo(dir)
-	if err != nil {
+	var config *git.Config
+	if config_loc, err := git.ConfigFindGlobal(); err != nil {
+		if err.(*git.GitError).Code == git.ErrNotFound {
+			if c, err := git.NewConfig(); err != nil {
+				panic(err)
+			} else {
+				config = c
+			}
+		} else {
+			panic(err)
+		}
+	} else if c, err := git.OpenOndisk(config_loc); err != nil {
 		panic(err)
+	} else {
+		config = c
 	}
-	if _, err := repo.Head(); err != nil {
+	repo, err := getRepo(dir, config)
+	if err != nil {
 		panic(err)
 	}
 	worktree, err := repo.NewWorktreeFromSubrepository()
 	if err == nil {
-		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())))
+		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())), config)
 		if err != nil {
 			panic(err)
 		}
@@ -108,15 +161,14 @@ func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.
 	git_dir1, err := git.Discover(gat_path, true, nil)
 	var repo1 *git.Repository
 	if err != nil {
-		repo1, err = git.Clone(repo.Path(), gat_path, &git.CloneOptions{Bare: true})
-		if err != nil {
-			panic(err)
+		if err.(*git.GitError).Code == git.ErrNotFound {
+			repo1, err = git.Clone(repo.Path(), gat_path, &git.CloneOptions{Bare: true})
 		}
 	} else {
 		repo1, err = git.OpenRepository(filepath.Clean(git_dir1))
-		if err != nil {
-			panic(err)
-		}
+	}
+	if err != nil {
+		panic(err)
 	}
 	for _, r := range []*git.Repository{repo, repo1} {
 		if err = r.AddIgnoreRule(strings.Join([]string{".gat", "run-local", "run-remote"}, "\n")); err != nil {
@@ -133,21 +185,7 @@ func initGat(dir string) (*git.Repository, *git.Repository, *git.Worktree, *git.
 	}
 	config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 
-	if config_loc, err := git.ConfigFindGlobal(); err != nil {
-		if err.(*git.GitError).Code == git.ErrNotFound {
-			if config, err := git.NewConfig(); err != nil {
-				panic(err)
-			} else {
-				return repo, repo1, worktree, config
-			}
-		} else {
-			panic(err)
-		}
-	} else if config, err := git.OpenOndisk(config_loc); err != nil {
-		panic(err)
-	} else {
-		return repo, repo1, worktree, config
-	}
+	return repo, repo1, worktree, config
 }
 
 func main() {

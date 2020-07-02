@@ -1492,14 +1492,18 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 	if old_branch, err := repo1.LookupBranch(branchName, git.BranchLocal); err == nil {
 		defer old_branch.Free()
 		if stash_oid != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
-		panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
+		panic(fmt.Sprintf("Extant branch \"%v\" %v", branchName, stash_oid))
 	}
 	commit, err := headCommit(repo)
 	if err != nil {
 		if stash_oid != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(err)
 	}
@@ -1507,7 +1511,9 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 	to_delete, err := repo.CreateBranch(branchName, commit, false)
 	if err != nil {
 		if stash_oid != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(err)
 	}
@@ -1516,22 +1522,30 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 	if stash_oid != nil {
 		repo.SetHead(to_delete.Reference.Name())
 		if err = repo.Stashes.Apply(0, opts); err != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		idx, err := repo.Index()
 		if err != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		defer idx.Free()
 		// stage
 		if err = idx.UpdateAll([]string{"."}, nil); err != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		if err = idx.AddAll([]string{"."}, git.IndexAddDefault, nil); err != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		// for i := uint(0); i < idx.EntryCount(); i += 1 {
@@ -1544,24 +1558,31 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 		treeID, _ := idx.WriteTree()
 		tree, err := repo.LookupTree(treeID)
 		if err != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		// commit
 		currentTip, err := repo.LookupCommit(to_delete.Target())
-		if _, err := repo.CreateCommit("HEAD", sig, sig, fmt.Sprintf("gat create %s", branchName),
-			tree, currentTip); err != nil {
-			repo.Stashes.Pop(0, opts)
+		if _, err := repo.CreateCommit("HEAD", sig, sig, fmt.Sprintf("gat create %s", branchName), tree, currentTip); err != nil {
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		// restore master
 		repo.SetHead(to_return.Name())
 		if err = repo.CheckoutHead(&git.CheckoutOpts{Strategy: git.CheckoutRemoveUntracked}); err != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		if err = repo.ResetToCommit(commit, git.ResetHard, &git.CheckoutOpts{Strategy: git.CheckoutForce}); err != nil {
-			repo.Stashes.Pop(0, opts)
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		if err = repo.Stashes.Pop(0, opts); err != nil {
@@ -1629,14 +1650,18 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	}
 	if branchName == MasterWorktree {
 		if stash_oid != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
 	}
 	if old_branch, err := repo1.LookupBranch(branchName, git.BranchLocal); err == nil {
 		defer old_branch.Free()
 		if stash_oid != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(fmt.Sprintf("Extant branch \"%v\"", branchName))
 	}
@@ -1645,7 +1670,9 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	commit, err := headCommit(worktree.Repo)
 	if err != nil {
 		if stash_oid != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(err)
 	}
@@ -1654,7 +1681,9 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	new_branch, err := repo1.CreateBranch(branchName, commit, false)
 	if err != nil {
 		if stash_oid != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(err)
 	}
@@ -1663,14 +1692,18 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	options, err := git.NewWorktreeAddOptions(1, 0, new_branch.Reference)
 	if err != nil {
 		if stash_oid != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(err)
 	}
 	repo1_worktree, err := repo1.AddWorktree(branchName, filepath.Join(repo1.Path(), new_branch.Reference.Shorthand()), options)
 	if err != nil {
 		if stash_oid != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 		}
 		panic(err)
 	}
@@ -1679,23 +1712,31 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	if stash_oid != nil {
 		repo2, err := git.OpenRepository(filepath.Clean(repo1_worktree.Path()))
 		if err != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		defer repo2.Free()
 
 		new_worktree, err := repo2.NewWorktreeFromSubrepository()
 		if err != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
 		defer new_worktree.Free()
 
 		if err = new_worktree.Repo.Stashes.Apply(0, opts); err != nil {
-			worktree.Repo.Stashes.Pop(0, opts)
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
 			panic(err)
 		}
-		worktree.Repo.Stashes.Pop(0, opts)
+		if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+			panic(err)
+		}
 
 		// stage
 		idx, err := new_worktree.Repo.Index()
