@@ -18,7 +18,7 @@ _gat_completions()
 	  sendgrid
           $TREES1
           $TREES2"
-    if [[ $previous = '--dockerfile' ]]; then
+    if [ $previous = '--dockerfile' ] || [ $previous = 'dockerfile' ] ; then
         COMPREPLY=( $(compgen -o filenames -A file -- $cur) )
     else
 	COMPREPLY=( $(compgen -W "${OPTS[*]}" -- $cur) )

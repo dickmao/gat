@@ -958,16 +958,7 @@ func DockerfileCommand() *cli.Command {
 					panic(r)
 				}
 			}()
-
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(filepath.Clean(repo.Path()))
-			}
-			ioutil.WriteFile(filepath.Join(pwd, fmt.Sprintf("%s.gat", infile)), DockerfileSource(c, cli, imageId), 0644)
+			ioutil.WriteFile(fmt.Sprintf("%s.gat", infile), DockerfileSource(c, cli, imageId), 0644)
 			return nil
 		},
 	}
