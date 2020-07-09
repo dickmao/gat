@@ -26,6 +26,7 @@ import (
 
 	"cloud.google.com/go/logging/logadmin"
 	"cloud.google.com/go/storage"
+	"github.com/dickmao/gat/cos_gpu_installer"
 	"github.com/dickmao/gat/version"
 	git "github.com/dickmao/git2go/v31"
 	"github.com/docker/distribution"
@@ -185,7 +186,7 @@ func gcsMount(c *cli.Context, pwd string) error {
 	return nil
 }
 
-func HeadCommit(repo *git.Repository) (*git.Commit, error) {
+func headCommit(repo *git.Repository) (*git.Commit, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return nil, err
@@ -1135,6 +1136,7 @@ func RunRemoteCommand() *cli.Command {
 					AcceleratorType:  prefix + "/zones/" + zone + "/acceleratorTypes/" + gpuType,
 				})
 			}
+
 			instance := &compute.Instance{
 				Name:        gatId(c),
 				Description: "gat compute instance",
@@ -1144,6 +1146,18 @@ func RunRemoteCommand() *cli.Command {
 						{
 							Key:   "user-data",
 							Value: &user_data,
+						},
+						{
+							Key:   "cos-gpu-installer-env",
+							Value: &cos_gpu_installer.Gpu_installer_env,
+						},
+						{
+							Key:   "run-cuda-test-script",
+							Value: &cos_gpu_installer.Run_cuda_test,
+						},
+						{
+							Key:   "run-installer-script",
+							Value: &cos_gpu_installer.Run_installer,
 						},
 						{
 							Key:   "shutdown-script",
@@ -1489,7 +1503,7 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 		}
 		panic(fmt.Sprintf("Extant branch \"%v\" %v", branchName, stash_oid))
 	}
-	commit, err := HeadCommit(repo)
+	commit, err := headCommit(repo)
 	if err != nil {
 		if stash_oid != nil {
 			if err := repo.Stashes.Pop(0, opts); err != nil {
@@ -1658,7 +1672,7 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	}
 
 	// i need the commit of worktree
-	commit, err := HeadCommit(worktree.Repo)
+	commit, err := headCommit(worktree.Repo)
 	if err != nil {
 		if stash_oid != nil {
 			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {

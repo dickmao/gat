@@ -15,6 +15,8 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+//go:generate go run cos_gpu_installer_generate/cos_gpu_installer_generate.go
+
 func getRepo(path string, config *git.Config) (*git.Repository, error) {
 	var (
 		repo   *git.Repository
