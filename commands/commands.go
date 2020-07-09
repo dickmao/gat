@@ -185,7 +185,7 @@ func gcsMount(c *cli.Context, pwd string) error {
 	return nil
 }
 
-func headCommit(repo *git.Repository) (*git.Commit, error) {
+func HeadCommit(repo *git.Repository) (*git.Commit, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return nil, err
@@ -1489,7 +1489,7 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 		}
 		panic(fmt.Sprintf("Extant branch \"%v\" %v", branchName, stash_oid))
 	}
-	commit, err := headCommit(repo)
+	commit, err := HeadCommit(repo)
 	if err != nil {
 		if stash_oid != nil {
 			if err := repo.Stashes.Pop(0, opts); err != nil {
@@ -1658,7 +1658,7 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	}
 
 	// i need the commit of worktree
-	commit, err := headCommit(worktree.Repo)
+	commit, err := HeadCommit(worktree.Repo)
 	if err != nil {
 		if stash_oid != nil {
 			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
