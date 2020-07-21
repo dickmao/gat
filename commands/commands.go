@@ -1137,6 +1137,9 @@ func RunRemoteCommand() *cli.Command {
 				})
 			}
 
+			gpu_installer_env := cos_gpu_installer.Gpu_installer_env
+			run_cuda_test := cos_gpu_installer.Run_cuda_test
+			run_installer := cos_gpu_installer.Run_installer
 			instance := &compute.Instance{
 				Name:        gatId(c),
 				Description: "gat compute instance",
@@ -1149,15 +1152,15 @@ func RunRemoteCommand() *cli.Command {
 						},
 						{
 							Key:   "cos-gpu-installer-env",
-							Value: &cos_gpu_installer.Gpu_installer_env,
+							Value: &gpu_installer_env,
 						},
 						{
 							Key:   "run-cuda-test-script",
-							Value: &cos_gpu_installer.Run_cuda_test,
+							Value: &run_cuda_test,
 						},
 						{
 							Key:   "run-installer-script",
-							Value: &cos_gpu_installer.Run_installer,
+							Value: &run_installer,
 						},
 						{
 							Key:   "shutdown-script",

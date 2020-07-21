@@ -58,17 +58,52 @@ var (
 // _ = t.Execute(os.Stdout, localConfig{ []string{"foo", "bar"}, []string{"baz {{ $.Redouble }}", "qux"}, "doubled" })
 
 const templ string = `#cloud-config
-
 users:
 - default
 
 write_files:
+- path: /etc/systemd/system/cos-gpu-installer.service
+  permissions: 0755
+  owner: root
+  content: |
+    [Unit]
+    Description=Run the GPU driver installer container
+    After=network-online.target gcr-online.target
+
+    [Service]
+    User=root
+    Type=oneshot
+    RemainAfterExit=true
+    # The default stateful path to store user provided installer script and
+    # provided environment variables.
+    Environment=STATEFUL_PATH=/var/lib/nvidia
+    ExecStartPre=/bin/mkdir -p ${STATEFUL_PATH}
+    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-installer-script > /tmp/run_installer.sh && cp -f /tmp/run_installer.sh ${STATEFUL_PATH}/run_installer.sh || true"
+    ExecStart=/bin/bash ${STATEFUL_PATH}/run_installer.sh
+
+- path: /etc/systemd/system/cuda-vector-add.service
+  permissions: 0755
+  owner: root
+  content: |
+    [Unit]
+    Description=Run a CUDA Vector Addition Workload
+    Requires=cos-gpu-installer.service
+    After=cos-gpu-installer.service
+
+    [Service]
+    User=root
+    Type=oneshot
+    RemainAfterExit=true
+    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-cuda-test-script > /tmp/run_cuda_test.sh"
+    ExecStart=/bin/bash /tmp/run_cuda_test.sh
+
 - path: /etc/systemd/system/gat0.service
   permissions: 0644
   owner: root
   content: |
     [Unit]
     Description=Write service account json
+    After=cos-gpu-installer.service
 
     [Service]
     Environment="HOME={{ .Workdir }}"
@@ -138,7 +173,7 @@ func DockerCommands(c *cli.Context, project string, tag string, bucket string, s
 }
 
 func UserData(c *cli.Context, project string, tag string, bucket string, serviceAccountJson string, serviceAccountJsonContent string, workdir string) string {
-	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start gat0.service", "start gat1.service"}
+	runcmd := []string{"daemon-reload", "start cos-gpu-installer.service", "start cuda-vector-add.service", "start stackdriver-logging", "start gat0.service", "start gat1.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}

@@ -24,7 +24,7 @@ _GPU_INSTALLER_ENV_KEY="cos-gpu-installer-env"
 _GPU_INSTALLER_ENV_PATH="$(dirname $0)/gpu-installer-env"
 
 # The following environment variables may be changed by cos-gpu-installer-env.
-COS_NVIDIA_INSTALLER_CONTAINER="gcr.io/cos-cloud/cos-gpu-installer:latest"
+COS_NVIDIA_INSTALLER_CONTAINER="gcr.io/api-project-421333809285/cos-gpu-installer-docker"
 NVIDIA_INSTALL_DIR_HOST="/var/lib/nvidia"
 NVIDIA_INSTALL_DIR_CONTAINER="/usr/local/nvidia"
 ROOT_MOUNT_DIR="/root"
