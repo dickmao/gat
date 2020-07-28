@@ -26,6 +26,11 @@ import (
 
 	"cloud.google.com/go/logging/logadmin"
 	"cloud.google.com/go/storage"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/dickmao/gat/cos_gpu_installer"
 	"github.com/dickmao/gat/version"
 	git "github.com/dickmao/git2go/v31"
@@ -48,6 +53,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/oauth2/google"
@@ -56,7 +62,7 @@ import (
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/container/v1"
 	"google.golang.org/api/googleapi"
-	"google.golang.org/api/iam/v1"
+	giam "google.golang.org/api/iam/v1"
 	"google.golang.org/api/logging/v2"
 	"google.golang.org/api/option"
 	"google.golang.org/api/pubsub/v1"
@@ -473,11 +479,213 @@ func recordTargetId(lastInstanceId *uint64) func(ol *compute.OperationList) erro
 	}
 }
 
+func ensureInstanceProfile() (*iam.InstanceProfile, error) {
+	const instanceProfileName string = "gat"
+	const instanceProfileRoleName string = "gatServiceRole"
+	const policyDocument string = `{
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Principal": {"Service": "ec2.amazonaws.com"},
+        "Action": "sts:AssumeRole"
+    }]
+}
+`
+	var instanceProfile *iam.InstanceProfile
+	var instanceProfileRole *iam.Role
+	svcIam := iam.New(session.New())
+	if result, err := svcIam.GetRole(&iam.GetRoleInput{
+		RoleName: aws.String(instanceProfileRoleName),
+	}); err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case iam.ErrCodeNoSuchEntityException:
+				if result, err := svcIam.CreateRole(&iam.CreateRoleInput{
+					AssumeRolePolicyDocument: aws.String(policyDocument),
+					RoleName:                 aws.String(instanceProfileRoleName),
+				}); err != nil {
+					if aerr, ok := err.(awserr.Error); ok {
+						return nil, aerr
+					} else {
+						return nil, err
+					}
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String(filepath.Join("arn:aws:iam::aws:policy/service-role", instanceProfileRoleName)),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					if aerr, ok := err.(awserr.Error); ok {
+						return nil, aerr
+					} else {
+						return nil, err
+					}
+				} else {
+					instanceProfileRole = result.Role
+				}
+			default:
+				return nil, aerr
+			}
+		} else {
+			return nil, err
+		}
+	} else {
+		instanceProfileRole = result.Role
+	}
+
+	if result, err := svcIam.GetInstanceProfile(&iam.GetInstanceProfileInput{
+		InstanceProfileName: aws.String(instanceProfileName),
+	}); err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case iam.ErrCodeNoSuchEntityException:
+				if result, err := svcIam.CreateInstanceProfile(&iam.CreateInstanceProfileInput{
+					InstanceProfileName: aws.String(instanceProfileName),
+				}); err != nil {
+					if aerr, ok := err.(awserr.Error); ok {
+						return nil, aerr
+					} else {
+						return nil, err
+					}
+				} else {
+					instanceProfile = result.InstanceProfile
+					svcIam.AddRoleToInstanceProfile(&iam.AddRoleToInstanceProfileInput{
+						InstanceProfileName: instanceProfile.InstanceProfileName,
+						RoleName:            instanceProfileRole.RoleName,
+					})
+				}
+			default:
+				return nil, aerr
+			}
+		} else {
+			return nil, err
+		}
+	} else {
+		instanceProfile = result.InstanceProfile
+	}
+	return instanceProfile, nil
+}
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "test",
-		Flags: testFlags(),
+		Flags: runRemoteFlags(),
 		Action: func(c *cli.Context) error {
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			repo1 := c.Context.Value(repo1Key).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			config := c.Context.Value(configKey).(*git.Config)
+			project := c.String("project")
+			zone := c.String("zone")
+			region := c.String("region")
+			awsregion := c.String("awsregion")
+			if len(awsregion) == 0 {
+				awsregion = "us-east-2"
+			}
+			infile := inputDockerfile(c)
+			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+				panic(err)
+			}
+			config1, err := repo1.Config()
+			if err != nil {
+				panic(err)
+			}
+			if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
+				panic(err)
+			}
+			if err = ensureBucket(c); err != nil {
+				panic(err)
+			}
+
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(filepath.Clean(repo.Path()))
+			}
+			if err := gcsMount(c, pwd); err != nil {
+				panic(err)
+			}
+
+			bytes, newline_escaped, err := escapeCredentials()
+			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+			_ = user_data
+			diskSizeGb := c.Int64("disksizegb")
+			if diskSizeGb <= 0 {
+				tag := constructTag(c)
+				if images, err := getImages(tag); err != nil || len(images) == 0 {
+					if len(images) == 0 {
+						panic(fmt.Sprintf("Image tagged %s not found", tag))
+					} else {
+						panic(err)
+					}
+				} else {
+					diskSizeGb = 6 + images[0].Size/units.GiB
+					if diskSizeGb < 8 {
+						diskSizeGb = 8
+					}
+				}
+			}
+			shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+			_ = shutdown_script
+			var serviceAccount ServiceAccount
+			json.Unmarshal(bytes, &serviceAccount)
+			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
+			_ = prefix
+			machine := c.String("machine")
+			if len(machine) == 0 {
+				if len(awsregion) == 0 {
+					machine = "e2-standard-2"
+				} else {
+					machine = "t2.micro"
+				}
+			}
+
+			sess, err := session.NewSession(&aws.Config{
+				Region: aws.String(awsregion),
+			})
+
+			// Create EC2 service client
+			svc := ec2.New(sess)
+
+			// Specify the details of the instance that you want to create.
+			keyname := "dick"
+			profile, err := ensureInstanceProfile()
+			if err != nil {
+				panic(err)
+			}
+			runResult, err := svc.RunInstances(&ec2.RunInstancesInput{
+				IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
+					Arn: profile.Arn,
+				},
+				ImageId:      aws.String("ami-0a74b4edba22d2256"),
+				InstanceType: aws.String(machine),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+				KeyName:      &keyname,
+				// UserData:     &user_data,
+			})
+
+			if err != nil {
+				panic(err)
+			}
+
+			fmt.Println("Created instance", *runResult.Instances[0].InstanceId)
+
+			// Add tags to the created instance
+			_, errtag := svc.CreateTags(&ec2.CreateTagsInput{
+				Resources: []*string{runResult.Instances[0].InstanceId},
+				Tags: []*ec2.Tag{
+					{
+						Key:   aws.String("Name"),
+						Value: aws.String("MyFirstInstance"),
+					},
+				},
+			})
+			if errtag != nil {
+				panic(errtag)
+			}
+
+			fmt.Println("Successfully tagged instance")
 			return nil
 		},
 	}
@@ -1200,7 +1408,7 @@ func RunRemoteCommand() *cli.Command {
 						Scopes: []string{
 							compute.DevstorageFullControlScope,
 							compute.ComputeScope,
-							iam.CloudPlatformScope,
+							giam.CloudPlatformScope,
 						},
 					},
 				},
@@ -1982,6 +2190,10 @@ func runRemoteFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "machine",
 			Usage: "Machine type",
+		},
+		&cli.StringFlag{
+			Name:  "awsregion",
+			Usage: "AWS region",
 		},
 	}
 }

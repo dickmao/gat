@@ -211,6 +211,7 @@ func Shutdown(c *cli.Context, project string, tag string, bucket string, service
 `
 	t := template.Must(template.New("cloudConfig").Parse(templ))
 	var buf bytes.Buffer
+	// template execution ignores most of CloudConfig's members, obviously.
 	if err := t.Execute(&buf, CloudConfig{
 		Project:                   project,
 		Tag:                       tag,
