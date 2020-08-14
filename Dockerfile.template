@@ -1,3 +1,0 @@
-FROM {{ .Image }}
-COPY ./{{ .Notebook }} .
-CMD [ "start.sh", "jupyter", "nbconvert", "--to", "notebook", "--execute", "{{ .Notebook }}" ]

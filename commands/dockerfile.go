@@ -11,7 +11,6 @@ import (
 
 func DockerfileSource(c *cli.Context, cli *client.Client, imageId string) []byte {
 	const templ string = `FROM {{ .ImageId }}
-ENV GRANT_SUDO yes
 {{if .User}}USER root
 {{end}}RUN \
   apt-get -yq update \

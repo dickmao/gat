@@ -1,0 +1,446 @@
+* GCE
+image, files, no datasets
+
+Gm = gibibyte-month
+
+Docker registry and gcs is same price 0.026/Gm
+Still should not stuff files into image since two images can share gcs files.
+
+GCE one container per instance.
+
+use git purely as a db
+branch per tweak: hard to rediscover your tweak in a random branch
+branch per tweak: grid search (could be script-level, could not be)
+
+** gat local --test
+docker run --rm -i hadolint/hadolint < Dockerfile
+let user completely control Dockerfile, else fight
+BRANCH=gat-`git stash create | cut -c 1-7` sh -c "git clone .gat ; git checkout .git checkout --no-track -b \$BRANCH ; git worktree add ./.gat/\$BRANCH"
+BRANCH=gat-`git stash create | cut -c 1-7` sh -c "mkdir -p .gat/\$BRANCH ; git --work-tree=.gat/\$BRANCH checkout --no-track -b \$BRANCH"
+
+git clone --single-branch --bare . .gat
+cd .gat
+git config remote.origin.fetch 'refs/heads/*:refs/heads/*'
+cd ..
+git stash workingtree
+cd .gat
+git fetch origin
+git worktree add ./\$BRANCH \$BRANCH # now you have BRANCH
+
+Two actions:
+checkout branch: cd worktree.
+snap: commit -a.  docker build ..
+
+how do I go back to a tag?  cd to worktree.
+
+** gat local [ experiment | reuse prevailing | baseline ]
+git checkout -b experiment
+docker run --rm -it $(docker build -q .)
+
+** gat remote
+"gcloud ai job"
+docker build experiment:branch
+docker push experiment:branch
+gcloud run
+
+
+Adenlab zero-size MIG -- not going to happen.  And I'd have to identify IP, login,
+fish out the container, and docker run manually.
+
+* Dockerfile:
+Full blown freedom.  Maybe a jupyter nbconvert template?  COPY `git ls-files` ./work
+ag0001.py upload_s3 in the notebook... nah
+
+#cloud-config
+Q: Why not docker run --entrypoint <original entrypoint> gat-sentinel?
+A: What if <original entrypoint> was an array?
+
+Does dsub cloud-init the container?  it doesn't -- uses CLS pipeline construct
+ubuntu-1604-xenial-v20200317 doesn't even have docker installed
+
+problem:
+cannot create project without organization
+cannot create organization
+must have existing project
+gat run --project project-id
+
+docker build . -t test-repo:foobaz
+docker tag test-repo:foobaz gcr.io/p990d-g/test-repo:foobaz
+docker push gcr.io/p990d-g/test-repo:foobaz
+
+"create" "test" "edit" "list" "build" "run"
+
+** Injecting Dockerfile.template
+ai platform also punts by merely offering custom Dockerfiles for every occasion (and their Dockerfile also manually installs gsutil).  None of them have USER.
+
+what if we can say all user Dockerfiles are ubuntu.  We say, make a Dockerfile your damn self, run the shit.  Then `gat dockerfile`, which appends gcsfuse and gsutil (assuming ubuntu and will try to chown -R joyvan if necessary).
+
+EIN exclusive: `C-c SPC r` scans existing Dockerfile.  None?
+[jupyter/base-notebook] select list
+with-editor the template Dockerfile.
+He's going to make mistakes
+Proceed with the run on magit-process-sentinel
+
+** On the flipside
+gat run-remote... no feedback except magit-process-buffer
+start a timer to gcs pull down results
+
+
+
+
+need for template at all?
+  does gat care about anything in Dockerfile?  yes, gsutil.
+  Bespoke FROM ubuntu image, but that prefigures base vs. scipy
+  Machine generated docker stacks.
+  gat has to do this, not elisp
+
+** Datasets
+user's responsibility to gcsfuse in Dockerfile
+otherwise too hard to dovetail local to remote testing
+API request a new iamcredentials key impossible gcp console, and toolbox pull to get gcloud is a bear.  So copying credentials via user-data.
+"import gat" could install gcsfuse at runtime but you wouldn't know pacman vs. apt-get
+(besides I really want baketime).
+
+Authenticates, mounts, and returns populated directory.
+pydir is not language agnostic, obviously.
+  public:  gcsfuse --key-file ${GOOGLE_APPLICATION_CREDENTIALS} --implicit-dirs gcp-public-data-landsat gcp-public-data-landsat
+  pydir = gat.bucket(gs_url => "gs://gcp-public-data-landsat",
+                     dest => "./gcs")
+
+  private: gcsfuse --key-file ${GOOGLE_APPLICATION_CREDENTIALS} --implicit-dirs {{ .Project }}-{{ .Tag }} {{ .Project }}-{{ .Tag }}
+  pydir = gat.bucket(project => "api-project-421333809285",
+                     # repo => "test-repo", # gat needs to figure this out
+                     # worktree => "foobaz", # gat needs to figure this out
+                     dest => "./gcs")
+
+cannot seem to gcsfuse bucket to bind-mounted cos host directory
+  docker run --rm --entrypoint "/bin/bash" --name temp-container chiaen/docker-gcsfuse -v /mnt:/mnt -c "gcsfuse gcs:bucket /mnt"
+  docker run --name gat-run-container -v /mnt:/work gat-sentinel
+
+overwrite: gsutil cp test-repo/.gat/foobaz {core.project}-{gat.constructTag(c)}
+(image is gcr.io/{core.project}/{gat.constructTag(c)})
+
+* Attached disk:
+disksizegb = max(8, 6 + imagesize)
+arbitrary download sizes...
+
+** gha style caching
+explicit caching a la gha says "with: path: /var/tmp/tensorflow_datasets"
+  docker cp 8649bc3091b1:/root - | docker cp - 8649bc3091b1:/var/tmp
+  ~/tensorflow_datasets is a no-go since USER is unclear, and `docker cp` assumes '/'
+  echo "path random.tar" >> gs://api-project-421333809285-test-repo-master/caches/cache-key.manifest
+  docker cp carcass:path - > gs://api-project-421333809285-test-repo-master/caches/random.tar
+  on next go-round look for gs://api-project-421333809285-test-repo-*/caches/cache.tar
+  bad: still doesn't address how to size disk
+
+** premeditated
+bake ~/tensorflow_datasets into image
+bad: still doesn't address how to size disk
+bad: free-form by necessity (should i bake ~/.keras or ~/tensorflow_datasets?  what language do I use?)
+free-form is a showstopper
+
+
+
+
+github actions caching spec would have to be absorbed by gcp persistent disk
+* Boot disk:
+repo init -u https://chromium.googlesource.com/chromiumos/manifest.git --repo-url https://chromium.googlesource.com/external/repo.git
+repo.git is just the gitc filesystem client
+manifest.git -> default.xml -> chromiumos-overlay no specified revision
+manifest also cloned in working root gat/cos
+
+cd ~/trunk/src/third_party/chromiumos-overlay
+git rev-parse --show-toplevel => /mnt/host/source/src/third_party/chromiumos-overlay
+profiles/targets/chromeos/package.use contains only qemacs, not emacs
+
+the whole enchilada at ~/trunk/src/third_party/portage-stable
+grep url ~/trunk/src/third_party/portage-stable/.git/config
+git clone https://chromium.googlesource.com/chromiumos/overlays/portage-stable
+
+https://cloud.google.com/container-optimized-os/docs/resources/sources
+https://cloud.google.com/container-optimized-os/docs/how-to/building-from-open-source#building_a_image
+build_image from https://chromium.googlesource.com/chromiumos/platform/crosutils
+grep CPV gat/cos/chroot/build/lakitu/packages/Packages | grep editor
+only has qemacs and vim vim-core from time of build_packages
+~/trunk/chroot/build/lakitu/tmp/portage/logs
+
+https://chromium.googlesource.com/chromiumos/docs/+/master/portage/ebuild_faq.md
+/mnt/host/source/chromite/bin/setup_board
+
+Portage?
+https://chromium.googlesource.com/chromiumos/docs/+/refs/heads/master/portage/package_upgrade_process.md
+
+Emerge?
+crosutil/build_packages calls mnt/host/source/chromite/{bin/parallel_emerge,scripts/parallel_emerge.py}
+mnt/host/source/chromite/service/
+https://wiki.gentoo.org/wiki/Ebuild_repository
+https://chromium.googlesource.com/chromiumos/docs/+/master/portage/ebuild_faq.md
+main set of ebuilds	src/third_party/portage-stable/
+Chromium OS portage overlay	src/third_party/chromiumos-overlay/
+Chromium OS ebuilds	src/third_party/chromiumos-overlay/chromeos-base/
+target profile (per-package unmask, USE flags, etc)	src/third_party/chromiumos-overlay/profiles/targets/chromeos/
+host and per-target configs	src/third_party/chromiumos-overlay/chromeos/config/
+crossdev autoconf configs (in chroot)	/usr/share/crossdev/include/site/
+board sysroot (in chroot)	/build/${BOARD}
+
+lakitu packages:
+  cd gat/cos/chroot/build/lakitu/packages
+  ( for f in  */*.tbz* ; do basename $f | perl -ne '/([^-]+)/; print "$1\n"'; done ; ) > /tmp/lakitu
+  also, Packages
+  has qemacs, no nano
+
+cos-beta packages:
+  scp -i ~/.ssh/google_compute_engine  dick@35.192.160.120:/opt/google/chrome/resources/about_os_credits.html /tmp
+  grep span /tmp/about_os_credits.html |grep class=\"tit | perl -ne '/id="([^"]+)"/; print "$1\n"' > /tmp/cos-beta
+  has nano, no qemacs
+
+repo init -u https://chromium.googlesource.com/chromiumos/manifest.git -p linux -b release-R81-12871.B  --repo-url https://chromium.googlesource.com/external/repo.git
+# --depth 1 causes libchrome-576279.ebuild cannot find past-ago commit
+resigned that cos-beta is not release-R81-12871.B (console says 81-12871.44.0 beta)
+lakitu has qemacs, no nano
+equery-lakitu list '*'|grep editors
+wait, chromium.googlesource.com is NOT cos.googlesource.com
+I FOUND THE MANIFEST containing only qemacs and vim: ~/trunk/src/overlays/overlay-lakitu/virtual/target-lakitu-os-dev/target-lakitu-os-dev-2.ebuild
+build_packages with the changed manifest resulted in jq in chroot/build/lakitu/packages/app-misc!
+I didn't find containing only nano and vim in either https://cos.googlesource.com/mirrors/cros/chromiumos/overlays/chromiumos-overlay or https://cos.googlesource.com/cos/overlays/board-overlays ; findfiles ebuild | xargs egrep nano
+
+Running:
+sudo kvm -m 1024 -nographic -net nic,model=virtio -net user,hostfwd=tcp:127.0.0.1:9222-:22 -hda src/build/images/lakitu/latest/chromiumos_test_image.bin
+username root password test0000
+exit qemu by C-a c quit RET
+cros_sdk --unmount seems useful
+
+Uploading:
+cd src/build
+tar -Sczf compressed-image.tar.gz images/lakitu/latest/chromiumos_test_image.bin --transform 's|images/lakitu/latest/chromiumos_test_image.bin|disk.raw|'
+gsutil cp compressed-image.tar.gz gs://api-project-421333809285-test-repo-foobaz
+gcloud compute images create cos-81-12871-96-202004291659  --source-uri gs://api-project-421333809285-test-repo-foobaz/compressed-image.tar.gz
+goes to https://console.cloud.google.com/compute/images, not container registry images
+
+~/gat/.cos/src/overlays/overlay-lakitu/app-admin/stackdriver/files/stackdriver-logging.service: specifies LOGGING_AGENT_DOCKER_IMAGE
+LOGGING_AGENT_DOCKER_IMAGE="gcr.io/stackdriver-agents/stackdriver-logging-agent:0.2-1.5.33-1-1"
+~/gat/.cos/src/overlays/overlay-lakitu/app-admin/stackdriver/files/logging_configs/fluentd-lakitu.conf: ends up in /etc/google-fluentd/config.d/fluentd-lakitu.conf of LOGGING_AGENT_DOCKER_IMAGE _VIA_ `-v /etc/stackdriver/logging.config.d/:/etc/google-fluentd/config.d/` _VIA_ `systemctl start stackdriver-logging`
+gcloud logging read --freshness 3h "logName:projects/api-project-421333809285/logs/cos_journal_warning" --format json | jq -r '.[].jsonPayload.MESSAGE' | tac ; is a superset of what `gat log` should report
+
+* cos-gpu-installer
+src/third_party/kernel/v4.19-lakitu/drivers/gpu
+make -C ~/Downloads/NVIDIA-Linux-x86_64-440.64/kernel
+  produces nvidia.ko described by https://download.nvidia.com/XFree86/Linux-x86/384.59/README/installedcomponents.html as A kernel module (/lib/modules/`uname -r`/kernel/drivers/video/nvidia.ko); this kernel module provides low-level access to your NVIDIA hardware for all of the above components. It is generally loaded into the kernel when the X server is started, and is used by the X driver and OpenGL. nvidia.ko consists of two pieces: the binary-only core, and a kernel interface that must be compiled specifically for your kernel version. Note that the Linux kernel does not have a consistent binary interface like the X server, so it is important that this kernel interface be matched with the version of the kernel that you are using. This can either be accomplished by compiling yourself, or using precompiled binaries provided for the kernels shipped with some of the more common Linux distributions.
+
+i dunno, make -C src/third_party/kernel/v4.19 makes kernel,
+but make -C src/third_party/kernel/v4.19-lakitu is a problem
+
+either way, none of this matters if "does not have enough resources available to fulfill the request. Try a different zone, or try again later"
+
+* It has to work from command line
+gat list
+gat hyper0
+gat run .
+gat create hyper1
+gat diff hyper0 (delegate to git)
+
+* multiworker
+** tf.distribute.MirroredStrategy(devices=["/gpu:0", "/gpu:1"])
+one machine
+nccl
+
+** tf.distribute.experimental.MultiWorkerMirroredStrategy()
+two machine
+CollectiveCommunication.RING gRPC
+CollectiveCommunication.NCCL nvidia
+
+it's a mess.
+
+https://github.com/tensorflow/ecosystem/commit/2cbd6579a844cff4e8155ccfcfa80bb696e4e28c
+suggests multiworker requires kubernetes
+
+* vast.ai
+without .ServiceAccountJson won't be able to pull a private gcr.io image
+will vast.ai docker run privileged?
+i'd need to throw out all the sentinel business and gsutil caching and storing results.
+
+* aws
+** cos?
+gcloud compute images export --destination-uri gs://artifacts.api-project-421333809285.appspot.com/my-image.tar.gz --image cos-81-12871-96-202006181203 --project api-project-421333809285 --export-format vhdx
+
+gsutil -D cp -a public-read gs://artifacts.api-project-421333809285.appspot.com/my-image.tar.gz s3://303634175659.dead
+
+create vmimport role
+https://documentation.commvault.com/commvault/v11/article?p=108828.htm
+
+do damage
+https://www.wavether.com/2016/11/import-qcow2-images-into-aws
+
+aws ec2 --region us-east-2 import-snapshot --description "cos" --disk-container file:///home/dick/bottlerocket/container.json
+
+aws ec2 --region us-east-2 describe-import-snapshot-tasks --import-task-id import-snap-0909a17f1166eef84
+
+
+upshot: won't start, unreachable, tried vhdx also
+
+cloud.google.com/compute/docs/images#cos says
+The cos images support:
+Google Compute Engine metadata framework
+Compute Engine guest environment.
+suggesting it can't run on aws.
+
+aws ec2 --region us-east-2 run-instances --image-id ami-0769010598735bd45 --count 1 --instance-type t2.micro --key-name dick
+
+** TODO aws native
+aws ec2 deregister-image --image-id $(aws ec2 describe-images --filters "Name=name,Values=packer-gat*" --query 'Images[*].[ImageId]' --output text) ; packer build     -var 'aws_access_key=AKIAIY5QIBXHBAAIK2TA'     -var 'aws_secret_key=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'   packer.json
+
+create an iamprofile and link it to t2.micro.  So I need to cloudformation create-stack.  don't create a stack because user is going to delete instances manually (and leave the iamprofile orphaned).
+
+put in ~/.aws/credentials on t2.micro
+[default]
+credential_source = Ec2InstanceMetadata
+
+on t2.micro:
+aws ec2 --region $(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region) terminate-instances --instance-ids $(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .instanceId) --dry-run
+
+testing:
+aws iam remove-role-from-instance-profile --instance-profile-name gat --role-name gatServiceRole ; aws iam delete-instance-profile --instance-profile-name gat
+aws iam list-instance-profiles | jq -r '.InstanceProfiles'
+
+ssh ec2-user@$(aws ec2 --region us-east-2 describe-instances --filters Name=instance-state-code,Values=16,64,80 --query Reservations[*].Instances[*].[PublicDnsName] --output text)
+
+aws ec2 --region us-east-2 terminate-instances --instance-ids $(aws ec2 --region us-east-2 describe-instances --filters Name=instance-state-code,Values=16,64,80 --query Reservations[*].Instances[*].[InstanceId] --output text)
+
+Under ECS, you're supposed to specify resourceRequirements in task definition to leverage a GPU, and the nvidia/cuda:9.0-base image.  I won't be using ECS tasks (which I'd done previously with a funky `ecscli compose` dev.jsonnet.TEMPLATE).
+
+Instead of nvidia/cuda:9.0-base let's try nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04
+
+Seems like I get more with ECS ami than https://github.com/NVIDIA/nvidia-docker/wiki/Deploy-on-Amazon-EC2
+
+https://github.com/NVIDIA/nvidia-docker readme still requires --gpus:
+docker run --gpus all nvidia/cuda:10.0-base nvidia-smi
+
+packer-gat ami will have nvidia/cuda:gat, but ein-gat is built off jupyter/docker-stacks.
+Premise was user could have any *debian* base image he pleases, and I'd fill in the gat essentials.  So he's responsible for nvidia/cuda-10.1-runtime /avec/ tensorflow-notebook.  A pre-baked docker image on AMI would require --entrypoint and --volume arguments in the `docker run` invocation in cloud-config!
+
+~"bash -c 'docker build -t nvidia/cuda:gat - < <(cat <<EOF\nFROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04\nRUN set -xe && apt-get -yq update && DEBIAN_FRONTEND=noninteractive apt-get -yq install python3 ipython3 python3-pip vim && python3 -m pip install --upgrade pip && python3 -m pip install tensorflow matplotlib\nEOF\n)'"~
+
+just show me the goods:
+cat eager.nbconvert.ipynb | jq '..|.text?'
+
+*** TODO Explore https://github.com/NVIDIA/nvidia-docker/wiki/NGC
+
+
+
+** use the full hour
+no, bro, as of 2 Oct 2017, ec2 billed by the instance-second.
+
++at the appointed hour, if idle, then terminate otherwise, reset the appointment
+to next hour+
+
++when I run-remote, must query tagged instances `systemctl status` userjob.+
+
+* Helm
+from hello<foobaz>, cannot C-c p f hello<foobay>
+hard to C-c p p test-repo/.gat (but possible by first visiting file in it).
+if in test-repo/.gat, magit (kbd "% g") to worktree qua branch (cannot checkout branch).
+
+you're in eta0.3 and you change eta to 0.4 if you save, you've just
+mucked eta0.3, like mucking git-master when oops git-dev since you
+only keep one tagged image for eta0.3, there's no audit trail besides docker image.
+Prompt! "Run worktree [eta0.3]: " Force a commit with every
+run-remote?  No.  Won't be able to commit untracked files.  Also super
+messy (have to stash, branch to an incremented run number, stash
+apply, commit, branch-back, stash pop, or some craziness).
+
+Stay in Untitled.ipynb.  "Run worktree [master]: eta0.3" calls `gat create eta0.3` `gat dockerfile [tensorflow] Untitled.ipynb` `gat run-remote` but that's all in shellspace.  Abortive attempt.  Make another change, "Run worktree [eta0.3]: "
+
+My [master] Untitled.ipynb contains the eta0.3 change, it's my continuous working copy.  If I want to flip to eta0.3, just `C-c p f`.  Okay, I do that.  Now "Run worktree [eta0.3]: eta0.4" calls `gat create eta0.4`.  I remain in [eta0.3].
+
+C-c SPC e "gat edit"
+C-c p f from there
+C-c SPC b "gat build"
+C-c SPC r "gat run"
+
+uniquify-buffer-name-style post-forward-angle-brackets causes foo.py<foobaz>
+cannot associate ein buffer with file because remote
+must apply uniquify logic on nbpath
+
+** buffer naming
+Untitled.ipynb[ein:markdown]<2> is not a solution
+Untitled.ipynb[foobaz] would have to mess with polymode
+foobaz/Untitled.ipynb[ein:markdown] maybe?
+
+
+saving a notebook, should run an nbdime-like separator such that
+Untitled.ipynb isn't tracked but the Untitled.inputs
+
+* Interactive K8s
+gce have to spin up instance, figure out machine class, pull image, forget it
+gke *might* have to spin up instance, but that's it.
+
+
+git clone
+dvc pull
+dvc repro
+
+edit on cluster
+i have to be able to magit commit my ipynb
+so ipynb has to be local or tramped
+volume must be visible to remote server and to git
+so volume could be tramped local (ssh to me) or tramped remote (ssh to gke)
+ssh to me is impossible but i really want Untitled to be local
+too bad: edit on netapp, `rj monster`.  So, edit on *http://35.162.189.22*.
+
+k8s state: when should I call kubernetes-config-refresh-now?
+when state is empty and when explicit
+
+ein:cluster-login
+  ein:k8s-get-contexts => minikube, gke_project
+  multiple sessions on gke?  impossible -- single ingress.
+  create new
+    ein podspec template - jupyter_service.yaml
+      volume is hostPath (minikube) or gitRepo (gke_project)
+      unless .git present, immediately git clone `git remote get-url origin`
+      dvc pull
+    `kubectl describe svc jupyter-service` gets me NodePort
+    `kubectl describe no` gets me InternalIP
+    url-or-port is InternalIP:NodePort (minikube) or ing-Address:80
+  existing
+    suppose minikube, i'd go to nodeport:nodeip
+    suppose ein-gke, i'd go ingress
+    suppose custom, lb or nodeport could have externalip, on aws lb is a hostname not an IP, so it could be anything.
+    https://kubernetes.io/docs/concepts/services-networking/connect-applications-service
+
+for gcloud tramp
+https://qiita.com/tanatana/items/218b19808f2428b125fe
+
+* Can Untitled be strictly local?
+Asymmetry: remote cannot mount WD, but local can mount WD'
+[port forward] ein:login to local:18888 port forwards to remote:8888
+[just want remote's kernel]:
+
+Choice 1-3 don't protect against closing laptop!
+1. ein:login local notebook server
+   sshfs-mount remote
+   remote ipykernel drops a runtime json in sshfs-mount
+   local notebook server zmq's according to runtime json
+   local notebook server cannot interrupt or restart
+2. sshfs-mount remote as ./sshfs-mount
+   cd ./sshfs-mount ; ln -s ../Untitled.ipynb .
+   ein:login remote notebook server
+3. docker run my/kernel-gateway
+   people won't want to mess with a Dockerfile
+   local server, remote kg, pointless if you can't close your laptop
+   selecting that kernel would have to spin up gce instance
+   can't be ad hoc gce because you want remote env to be identical
+   and would take too long to spin up and pip install
+   so argues for a bespoke k8s service with image
+   which you'd have to minikube as well -- people won't do this.
+   sshfs-mount remote as ./sshfs-mount
+   cd ./sshfs-mount ; ln -s ../Untitled.ipynb .
+4. nbconvert
+   if offline, makes sense to spin up gce's as you need them
+   Spin up a Container-Optimized OS image.  Docker pull your minikube stash.
+   User would have had to create a minikube stash.
+   answer the question: should server be local or container?
+   container because ipynb has to run thru nbconvert offline
+   container, always container, because I have to close my laptop.
+* Competition
+https://github.com/lab-ml/lab
+https://github.com/google/caliban

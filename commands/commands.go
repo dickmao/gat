@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/dickmao/gat/cos_gpu_installer"
 	"github.com/dickmao/gat/version"
@@ -510,9 +512,12 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 						return nil, err
 					}
 				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
-					PolicyArn: aws.String(filepath.Join("arn:aws:iam::aws:policy/service-role", instanceProfileRoleName)),
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"),
 					RoleName:  aws.String(instanceProfileRoleName),
 				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
 					if aerr, ok := err.(awserr.Error); ok {
 						return nil, aerr
 					} else {
@@ -567,128 +572,154 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "test",
-		Flags: runRemoteFlags(),
+		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			config := c.Context.Value(configKey).(*git.Config)
-			project := c.String("project")
-			zone := c.String("zone")
-			region := c.String("region")
-			awsregion := c.String("awsregion")
-			if len(awsregion) == 0 {
-				awsregion = "us-east-2"
-			}
-			infile := inputDockerfile(c)
-			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
-				panic(err)
-			}
-			config1, err := repo1.Config()
-			if err != nil {
-				panic(err)
-			}
-			if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
-				panic(err)
-			}
-			if err = ensureBucket(c); err != nil {
-				panic(err)
-			}
-
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(filepath.Clean(repo.Path()))
-			}
-			if err := gcsMount(c, pwd); err != nil {
-				panic(err)
-			}
-
-			bytes, newline_escaped, err := escapeCredentials()
-			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
-			_ = user_data
-			diskSizeGb := c.Int64("disksizegb")
-			if diskSizeGb <= 0 {
-				tag := constructTag(c)
-				if images, err := getImages(tag); err != nil || len(images) == 0 {
-					if len(images) == 0 {
-						panic(fmt.Sprintf("Image tagged %s not found", tag))
-					} else {
-						panic(err)
-					}
-				} else {
-					diskSizeGb = 6 + images[0].Size/units.GiB
-					if diskSizeGb < 8 {
-						diskSizeGb = 8
-					}
-				}
-			}
-			shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
-			_ = shutdown_script
-			var serviceAccount ServiceAccount
-			json.Unmarshal(bytes, &serviceAccount)
-			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
-			_ = prefix
-			machine := c.String("machine")
-			if len(machine) == 0 {
-				if len(awsregion) == 0 {
-					machine = "e2-standard-2"
-				} else {
-					machine = "t2.micro"
-				}
-			}
-
-			sess, err := session.NewSession(&aws.Config{
-				Region: aws.String(awsregion),
-			})
-
-			// Create EC2 service client
-			svc := ec2.New(sess)
-
-			// Specify the details of the instance that you want to create.
-			keyname := "dick"
-			profile, err := ensureInstanceProfile()
-			if err != nil {
-				panic(err)
-			}
-			runResult, err := svc.RunInstances(&ec2.RunInstancesInput{
-				IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
-					Arn: profile.Arn,
-				},
-				ImageId:      aws.String("ami-0a74b4edba22d2256"),
-				InstanceType: aws.String(machine),
-				MinCount:     aws.Int64(1),
-				MaxCount:     aws.Int64(1),
-				KeyName:      &keyname,
-				// UserData:     &user_data,
-			})
-
-			if err != nil {
-				panic(err)
-			}
-
-			fmt.Println("Created instance", *runResult.Instances[0].InstanceId)
-
-			// Add tags to the created instance
-			_, errtag := svc.CreateTags(&ec2.CreateTagsInput{
-				Resources: []*string{runResult.Instances[0].InstanceId},
-				Tags: []*ec2.Tag{
-					{
-						Key:   aws.String("Name"),
-						Value: aws.String("MyFirstInstance"),
-					},
-				},
-			})
-			if errtag != nil {
-				panic(errtag)
-			}
-
-			fmt.Println("Successfully tagged instance")
 			return nil
 		},
 	}
+}
+
+func isAwsRegion(region string) bool {
+	matched, _ := regexp.Match(`-\d$`, []byte(region))
+	return matched
+}
+
+func RunRemoteCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "run-remote",
+		Flags: runRemoteFlags(),
+		Action: func(c *cli.Context) error {
+			if isAwsRegion(c.String("awsregion")) {
+				return runRemoteAws(c)
+			}
+			return runRemoteGce(c)
+		},
+	}
+}
+
+func runRemoteAws(c *cli.Context) error {
+	repo := c.Context.Value(repoKey).(*git.Repository)
+	repo1 := c.Context.Value(repo1Key).(*git.Repository)
+	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+	config := c.Context.Value(configKey).(*git.Config)
+	project := c.String("project")
+	zone := c.String("zone")
+	region := c.String("region")
+	awsregion := c.String("awsregion")
+	infile := inputDockerfile(c)
+	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+		panic(err)
+	}
+	config1, err := repo1.Config()
+	if err != nil {
+		panic(err)
+	}
+	if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
+		panic(err)
+	}
+	if err = ensureBucket(c); err != nil {
+		panic(err)
+	}
+
+	var pwd string
+	if worktree != nil {
+		pwd = worktree.Path()
+	} else {
+		pwd = filepath.Dir(filepath.Clean(repo.Path()))
+	}
+	if err := gcsMount(c, pwd); err != nil {
+		panic(err)
+	}
+
+	machine := c.String("machine")
+	var gpus string
+	if len(machine) == 0 {
+		machine = "t2.micro"
+	} else if ok, _ := regexp.Match(`^g`, []byte(machine)); ok {
+		gpus = " --gpus all"
+	}
+
+	bytes, newline_escaped, err := escapeCredentials()
+	user_data := UserDataAws(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp", gpus)
+	diskSizeGb := c.Int64("disksizegb")
+	if diskSizeGb <= 0 {
+		tag := constructTag(c)
+		if images, err := getImages(tag); err != nil || len(images) == 0 {
+			if len(images) == 0 {
+				panic(fmt.Sprintf("Image tagged %s not found", tag))
+			} else {
+				panic(err)
+			}
+		} else {
+			diskSizeGb = 6 + images[0].Size/units.GiB
+			if diskSizeGb < 8 {
+				diskSizeGb = 8
+			}
+		}
+	}
+	var serviceAccount ServiceAccount
+	json.Unmarshal(bytes, &serviceAccount)
+	sess, err := session.NewSessionWithOptions(session.Options{
+		Config: aws.Config{
+			Region: aws.String(awsregion),
+		},
+		SharedConfigState: session.SharedConfigEnable,
+	})
+
+	svc := ec2.New(sess)
+	profile, err := ensureInstanceProfile()
+	if err != nil {
+		panic(err)
+	}
+	var runResult *ec2.Reservation
+	for i, retries := 0, 5; i < retries+1; i++ {
+		if i >= retries {
+			panic("Retries exceeded")
+		}
+		runResult, err = svc.RunInstances(&ec2.RunInstancesInput{
+			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
+				Arn: profile.Arn,
+			},
+			InstanceMarketOptions: &ec2.InstanceMarketOptionsRequest{
+				MarketType:  aws.String(ec2.MarketTypeSpot),
+				SpotOptions: &ec2.SpotMarketOptions{},
+			},
+			ImageId:      aws.String("ami-0d84e5dc06b638003"),
+			InstanceType: aws.String(machine),
+			MinCount:     aws.Int64(1),
+			MaxCount:     aws.Int64(1),
+			KeyName:      aws.String("dick"),
+			UserData:     &user_data,
+		})
+		if err != nil {
+			if reqErr, ok := err.(awserr.RequestFailure); ok {
+				if reqErr.StatusCode() == 400 {
+					awsErr, _ := err.(awserr.Error)
+					fmt.Println("Waiting... ", awsErr.Message())
+					time.Sleep(3000 * time.Millisecond)
+					continue
+				}
+				panic(reqErr)
+			}
+			panic(err)
+		} else {
+			break
+		}
+	}
+	if _, errtag := svc.CreateTags(&ec2.CreateTagsInput{
+		Resources: []*string{runResult.Instances[0].InstanceId},
+		Tags: []*ec2.Tag{
+			{
+				Key:   aws.String("Name"),
+				Value: aws.String(constructTag(c)),
+			},
+		},
+	}); errtag != nil {
+		panic(errtag)
+	}
+	fmt.Println("Created instance", *runResult.Instances[0].InstanceId)
+	return nil
 }
 
 func VersionCommand() *cli.Command {
@@ -1231,198 +1262,290 @@ func BuildCommand() *cli.Command {
 	}
 }
 
+func pushAws(c *cli.Context) error {
+	repo := c.Context.Value(repoKey).(*git.Repository)
+	repo1 := c.Context.Value(repo1Key).(*git.Repository)
+	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+	config := c.Context.Value(configKey).(*git.Config)
+	project := c.String("project")
+	zone := c.String("zone")
+	region := c.String("region")
+	awsregion := c.String("awsregion")
+	infile := inputDockerfile(c)
+	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "build", "--dockerfile", infile}); err != nil {
+		panic(err)
+	}
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		Config: aws.Config{
+			Region: aws.String(awsregion),
+		},
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+	svc := ecr.New(sess)
+	tag := constructTag(c)
+	ecrRepoName, ecrRepoTag := func() (string, string) {
+		x := strings.Split(tag, ":")
+		return x[0], x[1]
+	}()
+	if _, err := svc.DescribeRepositories(&ecr.DescribeRepositoriesInput{
+		RepositoryNames: []*string{
+			aws.String(ecrRepoName),
+		},
+	}); err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			if aerr.Code() != ecr.ErrCodeRepositoryNotFoundException {
+				panic(aerr)
+			} else if _, err := svc.CreateRepository(&ecr.CreateRepositoryInput{
+				RepositoryName: aws.String(ecrRepoName),
+			}); err != nil {
+				panic(err)
+			}
+		} else {
+			panic(err)
+		}
+	}
+
+	extant, err := svc.BatchGetImage(&ecr.BatchGetImageInput{
+		ImageIds: []*ecr.ImageIdentifier{
+			{
+				ImageTag: aws.String(ecrRepoTag),
+			},
+		},
+		RepositoryName: aws.String(ecrRepoName),
+	})
+	if err != nil {
+		panic(err)
+	}
+	if true {
+
+	} else if len(extant.Images) > 0 {
+		// that means not ImageAlreadyExistsException
+		var ids []*ecr.ImageIdentifier
+		for _, image := range extant.Images {
+			ids = append(ids, image.ImageId)
+		}
+		if _, err := svc.BatchDeleteImage(&ecr.BatchDeleteImageInput{
+			ImageIds:       ids,
+			RepositoryName: aws.String(ecrRepoName),
+		}); err != nil {
+			panic(err)
+		}
+	}
+
+	// oh crap, could I just have used the docker cli as in pushGce?
+
+	// if oldImage := getImage(project, constructTag(c)); oldImage != nil {
+	// 	oldDigest, _ = oldImage.Digest() // record gcr.io existing digest
+	// }
+	// if err := pushImage(project, constructTag(c)); err != nil {
+	// 	panic(err) // push gcr.io current image
+	// }
+	// if newImage := getImage(project, constructTag(c)); newImage != nil {
+	// 	newDigest, _ = newImage.Digest() // record gcr.io new digest
+	// }
+	// if len(oldDigest.Hex) > 0 && oldDigest.String() != newDigest.String() {
+	// 	if err := deleteImage(project, constructTag(c), oldDigest); err != nil {
+	// 		panic(err) // if digest changed, delete old image
+	// 	}
+	// }
+	return nil
+}
+
+func pushGce(c *cli.Context) error {
+	repo := c.Context.Value(repoKey).(*git.Repository)
+	repo1 := c.Context.Value(repo1Key).(*git.Repository)
+	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+	config := c.Context.Value(configKey).(*git.Config)
+	project := c.String("project")
+	zone := c.String("zone")
+	region := c.String("region")
+	infile := inputDockerfile(c)
+	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
+		panic(err)
+	}
+	var oldDigest, newDigest v1.Hash
+	if oldImage := getImage(project, constructTag(c)); oldImage != nil {
+		oldDigest, _ = oldImage.Digest()
+	}
+	if err := pushImage(project, constructTag(c)); err != nil {
+		panic(err)
+	}
+	if newImage := getImage(project, constructTag(c)); newImage != nil {
+		newDigest, _ = newImage.Digest()
+	}
+	if len(oldDigest.Hex) > 0 && oldDigest.String() != newDigest.String() {
+		if err := deleteImage(project, constructTag(c), oldDigest); err != nil {
+			panic(err)
+		}
+	}
+	return nil
+}
+
 func PushCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "push",
 		Flags: pushFlags(),
 		Action: func(c *cli.Context) error {
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			config := c.Context.Value(configKey).(*git.Config)
-			project := c.String("project")
-			zone := c.String("zone")
-			region := c.String("region")
-			infile := inputDockerfile(c)
-			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
-				panic(err)
+			if isAwsRegion(c.String("awsregion")) {
+				return pushAws(c)
 			}
-			var oldDigest, newDigest v1.Hash
-			if oldImage := getImage(project, constructTag(c)); oldImage != nil {
-				oldDigest, _ = oldImage.Digest()
-			}
-			if err := pushImage(project, constructTag(c)); err != nil {
-				panic(err)
-			}
-			if newImage := getImage(project, constructTag(c)); newImage != nil {
-				newDigest, _ = newImage.Digest()
-			}
-			if len(oldDigest.Hex) > 0 && oldDigest.String() != newDigest.String() {
-				if err := deleteImage(project, constructTag(c), oldDigest); err != nil {
-					panic(err)
-				}
-			}
-			return nil
+			return pushGce(c)
 		},
 	}
 }
 
-func RunRemoteCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "run-remote",
-		Flags: runRemoteFlags(),
-		Action: func(c *cli.Context) error {
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			config := c.Context.Value(configKey).(*git.Config)
-			project := c.String("project")
-			zone := c.String("zone")
-			region := c.String("region")
-			infile := inputDockerfile(c)
-			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
-				panic(err)
-			}
-			config1, err := repo1.Config()
-			if err != nil {
-				panic(err)
-			}
-			if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
-				panic(err)
-			}
-			if err = ensureBucket(c); err != nil {
-				panic(err)
-			}
-
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(filepath.Clean(repo.Path()))
-			}
-			if err := gcsMount(c, pwd); err != nil {
-				panic(err)
-			}
-
-			bytes, newline_escaped, err := escapeCredentials()
-			user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
-			diskSizeGb := c.Int64("disksizegb")
-			if diskSizeGb <= 0 {
-				tag := constructTag(c)
-				if images, err := getImages(tag); err != nil || len(images) == 0 {
-					if len(images) == 0 {
-						panic(fmt.Sprintf("Image tagged %s not found", tag))
-					} else {
-						panic(err)
-					}
-				} else {
-					diskSizeGb = 6 + images[0].Size/units.GiB
-					if diskSizeGb < 8 {
-						diskSizeGb = 8
-					}
-				}
-			}
-			shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
-			var serviceAccount ServiceAccount
-			json.Unmarshal(bytes, &serviceAccount)
-			prefix := "https://www.googleapis.com/compute/v1/projects/" + project
-			machine := c.String("machine")
-			if len(machine) == 0 {
-				machine = "e2-standard-2"
-			}
-			gpuCount := c.Int64("gpus")
-			acceleratorConfigs := []*compute.AcceleratorConfig{}
-			if gpuCount > 0 {
-				gpuType := c.String("gpu")
-				if len(gpuType) == 0 {
-					gpuType = "nvidia-tesla-t4"
-				}
-				acceleratorConfigs = append(acceleratorConfigs, &compute.AcceleratorConfig{
-					AcceleratorCount: gpuCount,
-					AcceleratorType:  prefix + "/zones/" + zone + "/acceleratorTypes/" + gpuType,
-				})
-			}
-
-			gpu_installer_env := cos_gpu_installer.Gpu_installer_env
-			run_cuda_test := cos_gpu_installer.Run_cuda_test
-			run_installer := cos_gpu_installer.Run_installer
-			instance := &compute.Instance{
-				Name:        gatId(c),
-				Description: "gat compute instance",
-				MachineType: prefix + "/zones/" + zone + "/machineTypes/" + machine,
-				Metadata: &compute.Metadata{
-					Items: []*compute.MetadataItems{
-						{
-							Key:   "user-data",
-							Value: &user_data,
-						},
-						{
-							Key:   "cos-gpu-installer-env",
-							Value: &gpu_installer_env,
-						},
-						{
-							Key:   "run-cuda-test-script",
-							Value: &run_cuda_test,
-						},
-						{
-							Key:   "run-installer-script",
-							Value: &run_installer,
-						},
-						{
-							Key:   "shutdown-script",
-							Value: &shutdown_script,
-						},
-					},
-				},
-				Scheduling: &compute.Scheduling{
-					Preemptible: true,
-				},
-				Disks: []*compute.AttachedDisk{
-					{
-						AutoDelete: true,
-						Boot:       true,
-						Type:       "PERSISTENT",
-						InitializeParams: &compute.AttachedDiskInitializeParams{
-							// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
-							SourceImage: "projects/api-project-421333809285/global/images/cos-81-12871-96-202006181203",
-							DiskSizeGb:  diskSizeGb,
-						},
-					},
-				},
-				NetworkInterfaces: []*compute.NetworkInterface{
-					{
-						AccessConfigs: []*compute.AccessConfig{
-							{
-								Type: "ONE_TO_ONE_NAT",
-								Name: "External NAT",
-							},
-						},
-						Network: prefix + "/global/networks/default",
-					},
-				},
-				ServiceAccounts: []*compute.ServiceAccount{
-					{
-						Email: serviceAccount.Client_email,
-						Scopes: []string{
-							compute.DevstorageFullControlScope,
-							compute.ComputeScope,
-							giam.CloudPlatformScope,
-						},
-					},
-				},
-				GuestAccelerators: acceleratorConfigs,
-			}
-			instancesService := compute.NewInstancesService(getService())
-			if op, err := instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
-				panic(err)
-			} else {
-				fmt.Println(op.Name)
-			}
-			return nil
-		},
+func runRemoteGce(c *cli.Context) error {
+	repo := c.Context.Value(repoKey).(*git.Repository)
+	repo1 := c.Context.Value(repo1Key).(*git.Repository)
+	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+	config := c.Context.Value(configKey).(*git.Config)
+	project := c.String("project")
+	zone := c.String("zone")
+	region := c.String("region")
+	infile := inputDockerfile(c)
+	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+		panic(err)
 	}
+	config1, err := repo1.Config()
+	if err != nil {
+		panic(err)
+	}
+	if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
+		panic(err)
+	}
+	if err = ensureBucket(c); err != nil {
+		panic(err)
+	}
+
+	var pwd string
+	if worktree != nil {
+		pwd = worktree.Path()
+	} else {
+		pwd = filepath.Dir(filepath.Clean(repo.Path()))
+	}
+	if err := gcsMount(c, pwd); err != nil {
+		panic(err)
+	}
+
+	bytes, newline_escaped, err := escapeCredentials()
+	user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+	diskSizeGb := c.Int64("disksizegb")
+	if diskSizeGb <= 0 {
+		tag := constructTag(c)
+		if images, err := getImages(tag); err != nil || len(images) == 0 {
+			if len(images) == 0 {
+				panic(fmt.Sprintf("Image tagged %s not found", tag))
+			} else {
+				panic(err)
+			}
+		} else {
+			diskSizeGb = 6 + images[0].Size/units.GiB
+			if diskSizeGb < 8 {
+				diskSizeGb = 8
+			}
+		}
+	}
+	shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+	var serviceAccount ServiceAccount
+	json.Unmarshal(bytes, &serviceAccount)
+	prefix := "https://www.googleapis.com/compute/v1/projects/" + project
+	machine := c.String("machine")
+	if len(machine) == 0 {
+		machine = "e2-standard-2"
+	}
+	gpuCount := c.Int64("gpus")
+	acceleratorConfigs := []*compute.AcceleratorConfig{}
+	if gpuCount > 0 {
+		gpuType := c.String("gpu")
+		if len(gpuType) == 0 {
+			gpuType = "nvidia-tesla-t4"
+		}
+		acceleratorConfigs = append(acceleratorConfigs, &compute.AcceleratorConfig{
+			AcceleratorCount: gpuCount,
+			AcceleratorType:  prefix + "/zones/" + zone + "/acceleratorTypes/" + gpuType,
+		})
+	}
+
+	gpu_installer_env := cos_gpu_installer.Gpu_installer_env
+	run_cuda_test := cos_gpu_installer.Run_cuda_test
+	run_installer := cos_gpu_installer.Run_installer
+	instance := &compute.Instance{
+		Name:        gatId(c),
+		Description: "gat compute instance",
+		MachineType: prefix + "/zones/" + zone + "/machineTypes/" + machine,
+		Metadata: &compute.Metadata{
+			Items: []*compute.MetadataItems{
+				{
+					Key:   "user-data",
+					Value: &user_data,
+				},
+				{
+					Key:   "cos-gpu-installer-env",
+					Value: &gpu_installer_env,
+				},
+				{
+					Key:   "run-cuda-test-script",
+					Value: &run_cuda_test,
+				},
+				{
+					Key:   "run-installer-script",
+					Value: &run_installer,
+				},
+				{
+					Key:   "shutdown-script",
+					Value: &shutdown_script,
+				},
+			},
+		},
+		Scheduling: &compute.Scheduling{
+			Preemptible: true,
+		},
+		Disks: []*compute.AttachedDisk{
+			{
+				AutoDelete: true,
+				Boot:       true,
+				Type:       "PERSISTENT",
+				InitializeParams: &compute.AttachedDiskInitializeParams{
+					// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
+					SourceImage: "projects/api-project-421333809285/global/images/cos-81-12871-96-202006181203",
+					DiskSizeGb:  diskSizeGb,
+				},
+			},
+		},
+		NetworkInterfaces: []*compute.NetworkInterface{
+			{
+				AccessConfigs: []*compute.AccessConfig{
+					{
+						Type: "ONE_TO_ONE_NAT",
+						Name: "External NAT",
+					},
+				},
+				Network: prefix + "/global/networks/default",
+			},
+		},
+		ServiceAccounts: []*compute.ServiceAccount{
+			{
+				Email: serviceAccount.Client_email,
+				Scopes: []string{
+					compute.DevstorageFullControlScope,
+					compute.ComputeScope,
+					giam.CloudPlatformScope,
+				},
+			},
+		},
+		GuestAccelerators: acceleratorConfigs,
+	}
+	instancesService := compute.NewInstancesService(getService())
+	if op, err := instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
+		panic(err)
+	} else {
+		fmt.Println(op.Name)
+	}
+	return nil
 }
 
 func massageEscapes(s string) string {
@@ -2192,8 +2315,8 @@ func runRemoteFlags() []cli.Flag {
 			Usage: "Machine type",
 		},
 		&cli.StringFlag{
-			Name:  "awsregion",
-			Usage: "AWS region",
+			Name:  "region",
+			Usage: "AWS or GCE region, e.g., us-east-2, us-central1",
 		},
 	}
 }

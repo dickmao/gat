@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	b64 "encoding/base64"
 	"fmt"
 	"text/template"
 
@@ -15,34 +16,35 @@ type CloudConfig struct {
 	ServiceAccountJson        string
 	ServiceAccountJsonContent string
 	Workdir                   string
+	Gpus                      string
 	Gat0, Gat1                []string
 }
 
 var (
 	gat0 = []string{
-		`bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/run-caches || true"`,
-		`bash -c "docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container {{ .Tag }} -c \"touch sentinel\""`,
-		`bash -c "docker cp {{ .ServiceAccountJson }} gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/"`,
-		`bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
-		`bash -c "function gsutil { docker run --rm --entrypoint bash gat-sentinel0 -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-sentinel-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-sentinel-container) ; do LINE=$(gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \") ; if [ ! -z \"$LINE\" ]; then gsutil_cat {{ .Bucket }}/run-caches/$${LINE#* } | docker cp - gat-sentinel-container:$(dirname $${LINE% *}) ; fi ; done "`,
-		`docker rmi gat-sentinel0`,
-		`bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
-		`docker rm gat-sentinel-container`,
-		`bash -c "ENTRYPOINT0=$(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }}) ; CMD0=$(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }}) ; ENTRYPOINT=$(if [ \"$ENTRYPOINT0\" = \"null\" ] ; then echo [] ; else echo $ENTRYPOINT0 ; fi) ; CMD=$(if [ \"$CMD0\" = \"null\" ] ; then echo [] ; else echo $CMD0 ; fi) ; printf \"FROM gat-sentinel0\nENTRYPOINT $ENTRYPOINT\nCMD $CMD\n\" | docker build -t gat-sentinel -"`,
-		`docker rmi gat-sentinel0`,
+		`/bin/bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/run-caches || true"`,
+		`/bin/bash -c "docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container {{ .Tag }} -c \"touch sentinel\""`,
+		`/bin/bash -c "docker cp {{ .ServiceAccountJson }} gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/"`,
+		`/bin/bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
+		`/bin/bash -c "function gsutil { docker run --rm --entrypoint bash gat-sentinel0 -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-sentinel-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-sentinel-container) ; do LINE=$(gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \") ; if [ ! -z \"$LINE\" ]; then gsutil_cat {{ .Bucket }}/run-caches/$${LINE#* } | docker cp - gat-sentinel-container:$(dirname $${LINE% *}) ; fi ; done "`,
+		`/usr/bin/docker rmi gat-sentinel0`,
+		`/bin/bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
+		`/usr/bin/docker rm gat-sentinel-container`,
+		`/bin/bash -c "ENTRYPOINT0=$(docker inspect -f '{{"{{"}}json .Config.Entrypoint{{"}}"}}' {{ .Tag }}) ; CMD0=$(docker inspect -f '{{"{{"}}json .Config.Cmd{{"}}"}}' {{ .Tag }}) ; ENTRYPOINT=$(if [ \"$ENTRYPOINT0\" = \"null\" ] ; then echo [] ; else echo $ENTRYPOINT0 ; fi) ; CMD=$(if [ \"$CMD0\" = \"null\" ] ; then echo [] ; else echo $CMD0 ; fi) ; printf \"FROM gat-sentinel0\nENTRYPOINT $ENTRYPOINT\nCMD $CMD\n\" | docker build -t gat-sentinel -"`,
+		`/usr/bin/docker rmi gat-sentinel0`,
 	}
 	// docker commit -c "ENTRYPOINT []" does not clear entrypoint.  Use build.
 	gat1 = []string{
-		`bash -c "docker run --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --name gat-run-container gat-sentinel"`,
-		`docker commit gat-run-container gat-run`,
-		`docker rm gat-run-container`,
-		`docker rmi gat-sentinel`,
-		`bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/run-local || true"`,
-		`bash -c "docker run --name gat-cache-container -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( [ \\$(realpath .) = '/' ] && export SYSDIRS='\\( -name boot -o -name dev -o -name etc -o -name home -o -name lib -o -name lib64 -o -name media -o -name mnt -o -name opt -o -name proc -o -name run -o -name sbin -o -name srv -o -name sys -o -name tmp -o -name usr -o -name var -o -name bin \\) -prune -o' ; for f in \\$(eval find . \\$SYSDIRS -not -path \\'*/.*\\' -type f -newer sentinel -print) ; do mkdir -p ./run-local/\\$(dirname \\$f) ; ln \\$(realpath \\$f) ./run-local/\\$f ; done ; ) && ( if [ -d ./run-local ]; then gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) rsync -r run-local $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/run-local ; fi ) \""`,
+		`/bin/bash -c "docker run{{ .Gpus }} --env GOOGLE_APPLICATION_CREDENTIALS=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/$(basename {{ .ServiceAccountJson }}) --privileged --name gat-run-container gat-sentinel"`,
+		`/usr/bin/docker commit gat-run-container gat-run`,
+		`/usr/bin/docker rm gat-run-container`,
+		`/usr/bin/docker rmi gat-sentinel`,
+		`/bin/bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/run-local || true"`,
+		`/bin/bash -c "docker run --name gat-cache-container -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( [ \\$(realpath .) = '/' ] && export SYSDIRS='\\( -name boot -o -name dev -o -name etc -o -name home -o -name lib -o -name lib64 -o -name media -o -name mnt -o -name opt -o -name proc -o -name run -o -name sbin -o -name srv -o -name sys -o -name tmp -o -name usr -o -name var -o -name bin \\) -prune -o' ; for f in \\$(eval find . \\$SYSDIRS -not -path \\'*/.*\\' -type f -newer sentinel -print) ; do mkdir -p ./run-local/\\$(dirname \\$f) ; ln \\$(realpath \\$f) ./run-local/\\$f ; done ; ) && ( if [ -d ./run-local ]; then gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) rsync -r run-local $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/run-local ; fi ) \""`,
 		// https://stackoverflow.com/a/16951928/5132008 R. Galli
-		`bash -c "function gsutil { docker run --rm --entrypoint bash gat-run -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; function gsutil_cp { if [ -d {{ .Bucket }} ]; then cp $1 $2 ; else docker run -v $(dirname $1):/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) cp /hostpwd/\\$(basename $1) $2\" ; fi ; } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-cache-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-cache-container) ; do if ! gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \" ; then RAND=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 7 ; echo ''); docker cp gat-cache-container:$cache - > /var/tmp/$RAND.tar ; echo \"$cache $RAND.tar\" >> /var/tmp/manifest.$KEY ; for f in $RAND.tar manifest.$KEY ; do gsutil_cp /var/tmp/$f {{ .Bucket }}/run-caches/$f ; done ; rm -f /var/tmp/$RAND.tar; fi ; done ; rm -f /var/tmp/manifest.$KEY ;"`,
-		`docker rm gat-cache-container`,
-		`docker rmi gat-run`,
+		`/bin/bash -c "function gsutil { docker run --rm --entrypoint bash gat-run -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; function gsutil_cp { if [ -d {{ .Bucket }} ]; then cp $1 $2 ; else docker run -v $(dirname $1):/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./\\$(basename {{ .ServiceAccountJson }})) cp /hostpwd/\\$(basename $1) $2\" ; fi ; } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-cache-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-cache-container) ; do if ! gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \" ; then RAND=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 7 ; echo ''); docker cp gat-cache-container:$cache - > /var/tmp/$RAND.tar ; echo \"$cache $RAND.tar\" >> /var/tmp/manifest.$KEY ; for f in $RAND.tar manifest.$KEY ; do gsutil_cp /var/tmp/$f {{ .Bucket }}/run-caches/$f ; done ; rm -f /var/tmp/$RAND.tar; fi ; done ; rm -f /var/tmp/manifest.$KEY ;"`,
+		`/usr/bin/docker rm gat-cache-container`,
+		`/usr/bin/docker rmi gat-run`,
 	}
 )
 
@@ -109,9 +111,9 @@ write_files:
     Environment="HOME={{ .Workdir }}"
     WorkingDirectory={{ .Workdir }}
     Type=oneshot
-    ExecStart=bash -c "echo $'{{ .ServiceAccountJsonContent }}' >$(basename {{ .ServiceAccountJson }}) && chmod 664 $(basename {{ .ServiceAccountJson }})"
+    ExecStart=/bin/bash -c "echo $'{{ .ServiceAccountJsonContent }}' >$(basename {{ .ServiceAccountJson }}) && chmod 664 $(basename {{ .ServiceAccountJson }})"
     ExecStart=/usr/bin/docker-credential-gcr configure-docker
-    ExecStart=/usr/bin/docker pull gcr.io/{{ .Project }}/{{ .Tag }}
+    ExecStart=/bin/bash -c "GOOGLE_APPLICATION_CREDENTIALS=$(basename {{ .ServiceAccountJson }}) /usr/bin/docker pull gcr.io/{{ .Project }}/{{ .Tag }}"
     ExecStart=/usr/bin/docker tag gcr.io/{{ .Project }}/{{ .Tag }} {{ .Tag }}
 {{ range .Gat0 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
 
@@ -141,8 +143,21 @@ write_files:
     Environment="HOME={{ .Workdir }}"
     WorkingDirectory={{ .Workdir }}
     Type=oneshot
-    ExecStart=bash -c "sleep 30 && systemctl stop stackdriver-logging"
-    ExecStart=bash -c "curl -s --retry 2 -H \"Authorization: Bearer $(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/$(cat {{ .Workdir }}/$(basename {{ .ServiceAccountJson }}) | jq -r -c '.client_email')/token -H 'Metadata-Flavor: Google' | jq -r -c '.access_token')\" -X DELETE https://compute.googleapis.com/compute/v1/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')/instances/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/id -H 'Metadata-Flavor: Google')"
+    ExecStart=/bin/bash -c "sleep 30 && systemctl stop stackdriver-logging"
+    ExecStart=/bin/bash -c "curl -s --retry 2 -H \"Authorization: Bearer $(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/$(cat {{ .Workdir }}/$(basename {{ .ServiceAccountJson }}) | jq -r -c '.client_email')/token -H 'Metadata-Flavor: Google' | jq -r -c '.access_token')\" -X DELETE https://compute.googleapis.com/compute/v1/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')/instances/$(curl -s --retry 2 http://metadata.google.internal/computeMetadata/v1/instance/id -H 'Metadata-Flavor: Google')"
+
+- path: /etc/systemd/system/aws-shutdown.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Shutdown
+
+    [Service]
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
+    Type=oneshot
+    ExecStart=/bin/bash -c "aws ec2 --region $(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region) terminate-instances --instance-ids $(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .instanceId)"
 
 `
 
@@ -162,6 +177,7 @@ func DockerCommands(c *cli.Context, project string, tag string, bucket string, s
 			ServiceAccountJson:        serviceAccountJson,
 			ServiceAccountJsonContent: serviceAccountJsonContent,
 			Workdir:                   workdir,
+			Gpus:                      "",
 			Gat0:                      gat0,
 			Gat1:                      gat1,
 		}); err != nil {
@@ -170,6 +186,38 @@ func DockerCommands(c *cli.Context, project string, tag string, bucket string, s
 		commands = buf.String()
 	}
 	return commands
+}
+
+func UserDataAws(c *cli.Context, project string, tag string, bucket string, serviceAccountJson string, serviceAccountJsonContent string, workdir string, gpus string) string {
+	runcmd := []string{"daemon-reload", "start gat0.service", "start gat1.service"}
+	if !c.Bool("noshutdown") {
+		runcmd = append(runcmd, "start aws-shutdown.service")
+	}
+	userdata := templ
+	userdata += "runcmd:\n"
+	for _, value := range runcmd {
+		userdata += fmt.Sprintf("- systemctl %s\n", value)
+	}
+	// double evaluation: could not get template {{block}} {{end}} to work.
+	for i := 0; i < 2; i++ {
+		t := template.Must(template.New("CloudConfig").Parse(userdata))
+		var buf bytes.Buffer
+		if err := t.Execute(&buf, CloudConfig{
+			Project:                   project,
+			Tag:                       tag,
+			Bucket:                    bucket,
+			ServiceAccountJson:        serviceAccountJson,
+			ServiceAccountJsonContent: serviceAccountJsonContent,
+			Workdir:                   workdir,
+			Gpus:                      gpus,
+			Gat0:                      gat0,
+			Gat1:                      gat1,
+		}); err != nil {
+			panic(err)
+		}
+		userdata = buf.String()
+	}
+	return b64.StdEncoding.EncodeToString([]byte(userdata))
 }
 
 func UserData(c *cli.Context, project string, tag string, bucket string, serviceAccountJson string, serviceAccountJsonContent string, workdir string) string {
@@ -193,6 +241,7 @@ func UserData(c *cli.Context, project string, tag string, bucket string, service
 			ServiceAccountJson:        serviceAccountJson,
 			ServiceAccountJsonContent: serviceAccountJsonContent,
 			Workdir:                   workdir,
+			Gpus:                      "",
 			Gat0:                      gat0,
 			Gat1:                      gat1,
 		}); err != nil {
