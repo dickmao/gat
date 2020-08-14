@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/dickmao/gat/cos_gpu_installer"
 	"github.com/dickmao/gat/version"
 	git "github.com/dickmao/git2go/v31"
@@ -100,11 +101,17 @@ var (
 	containerService           *container.Service
 	storageClient              *storage.Client
 	myAuthn                    *authn.Basic
+	awsSession                 *session.Session
+	awsSts                     *sts.STS
+	awsEcr                     *ecr.ECR
 	resourceManagerServiceOnce sync.Once
 	computeServiceOnce         sync.Once
 	containerServiceOnce       sync.Once
 	storageClientOnce          sync.Once
 	myAuthnOnce                sync.Once
+	awsSessionOnce             sync.Once
+	awsStsOnce                 sync.Once
+	awsEcrOnce                 sync.Once
 )
 
 type ServiceAccount struct {
@@ -224,6 +231,32 @@ func getClientStorage() *storage.Client {
 		}
 	})
 	return storageClient
+}
+
+func getAwsSession(awsregion string) *session.Session {
+	awsSessionOnce.Do(func() {
+		awsSession = session.Must(session.NewSessionWithOptions(session.Options{
+			Config: aws.Config{
+				Region: aws.String(awsregion),
+			},
+			SharedConfigState: session.SharedConfigEnable,
+		}))
+	})
+	return awsSession
+}
+
+func getAwsSts(awsregion string) *sts.STS {
+	awsStsOnce.Do(func() {
+		awsSts = sts.New(getAwsSession(awsregion))
+	})
+	return awsSts
+}
+
+func getAwsEcr(awsregion string) *ecr.ECR {
+	awsEcrOnce.Do(func() {
+		awsEcr = ecr.New(getAwsSession(awsregion))
+	})
+	return awsEcr
 }
 
 func getMyAuthn() *authn.Basic {
@@ -392,7 +425,46 @@ func descriptorFromResponse(response *http.Response) (distribution.Descriptor, e
 	return desc, nil
 }
 
-func getImage(project string, tag string) v1.Image {
+func getImageAws(awsregion string, tag string) *string {
+	ecrRepoName, ecrRepoTag := func() (string, string) {
+		x := strings.Split(tag, ":")
+		return x[0], x[1]
+	}()
+	svc := getAwsEcr(awsregion)
+	if _, err := svc.DescribeRepositories(&ecr.DescribeRepositoriesInput{
+		RepositoryNames: []*string{
+			aws.String(ecrRepoName),
+		},
+	}); err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			if aerr.Code() != ecr.ErrCodeRepositoryNotFoundException {
+				panic(aerr)
+			} else if _, err := svc.CreateRepository(&ecr.CreateRepositoryInput{
+				RepositoryName: aws.String(ecrRepoName),
+			}); err != nil {
+				panic(err)
+			}
+		} else {
+			panic(err)
+		}
+	}
+
+	if extant, err := svc.BatchGetImage(&ecr.BatchGetImageInput{
+		ImageIds: []*ecr.ImageIdentifier{
+			{
+				ImageTag: aws.String(ecrRepoTag),
+			},
+		},
+		RepositoryName: aws.String(ecrRepoName),
+	}); err != nil {
+		panic(err)
+	} else if len(extant.Images) > 0 {
+		return extant.Images[0].ImageId.ImageDigest
+	}
+	return nil
+}
+
+func getImageGce(project string, tag string) v1.Image {
 	refTag, err := name.ParseReference(filepath.Join("gcr.io", project, tag))
 	if err != nil {
 		panic(err)
@@ -401,7 +473,7 @@ func getImage(project string, tag string) v1.Image {
 	return img
 }
 
-func deleteImage(project string, tag string, digest v1.Hash) error {
+func deleteImageGce(project string, tag string, digest v1.Hash) error {
 	refDig, err := name.ParseReference(filepath.Join("gcr.io", project, tag[:strings.IndexByte(tag, ':')]+"@"+digest.String()))
 	if err != nil {
 		panic(err)
@@ -1252,10 +1324,10 @@ func BuildCommand() *cli.Command {
 			region := c.String("region")
 			infile := inputDockerfile(c)
 			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config), []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile}); err != nil {
-				panic(err)
+				return err
 			}
 			if err := buildImage(project, constructTag(c), infile+".gat"); err != nil {
-				panic(err)
+				return err
 			}
 			return nil
 		},
@@ -1274,83 +1346,37 @@ func pushAws(c *cli.Context) error {
 	infile := inputDockerfile(c)
 	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "build", "--dockerfile", infile}); err != nil {
-		panic(err)
+		return err
+	}
+	// getImageAws(project, constructTag(c))
+	svc := getAwsEcr(awsregion)
+	token, err := svc.GetAuthorizationToken(&ecr.GetAuthorizationTokenInput{})
+	if err != nil {
+		return err
+	} else if len(token.AuthorizationData) <= 0 {
+		return errors.New("commands: no authorization token returned")
+	}
+	passbytes, err := base64.StdEncoding.DecodeString(*token.AuthorizationData[0].AuthorizationToken)
+	if err != nil {
+		return err
 	}
 
-	sess := session.Must(session.NewSessionWithOptions(session.Options{
-		Config: aws.Config{
-			Region: aws.String(awsregion),
-		},
-		SharedConfigState: session.SharedConfigEnable,
-	}))
-	svc := ecr.New(sess)
-	tag := constructTag(c)
-	ecrRepoName, ecrRepoTag := func() (string, string) {
-		x := strings.Split(tag, ":")
+	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	if err != nil {
+		return err
+	}
+	server := fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", *identity.Account, awsregion)
+	username, password := func() (string, string) {
+		x := strings.Split(string(passbytes), ":")
 		return x[0], x[1]
 	}()
-	if _, err := svc.DescribeRepositories(&ecr.DescribeRepositoriesInput{
-		RepositoryNames: []*string{
-			aws.String(ecrRepoName),
-		},
-	}); err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			if aerr.Code() != ecr.ErrCodeRepositoryNotFoundException {
-				panic(aerr)
-			} else if _, err := svc.CreateRepository(&ecr.CreateRepositoryInput{
-				RepositoryName: aws.String(ecrRepoName),
-			}); err != nil {
-				panic(err)
-			}
-		} else {
-			panic(err)
-		}
-	}
-
-	extant, err := svc.BatchGetImage(&ecr.BatchGetImageInput{
-		ImageIds: []*ecr.ImageIdentifier{
-			{
-				ImageTag: aws.String(ecrRepoTag),
-			},
-		},
-		RepositoryName: aws.String(ecrRepoName),
+	tag := constructTag(c)
+	target := filepath.Join(server, tag)
+	jsonBytes, _ := json.Marshal(types.AuthConfig{
+		Username: username,
+		Password: password,
 	})
-	if err != nil {
-		panic(err)
-	}
-	if true {
-
-	} else if len(extant.Images) > 0 {
-		// that means not ImageAlreadyExistsException
-		var ids []*ecr.ImageIdentifier
-		for _, image := range extant.Images {
-			ids = append(ids, image.ImageId)
-		}
-		if _, err := svc.BatchDeleteImage(&ecr.BatchDeleteImageInput{
-			ImageIds:       ids,
-			RepositoryName: aws.String(ecrRepoName),
-		}); err != nil {
-			panic(err)
-		}
-	}
-
-	// oh crap, could I just have used the docker cli as in pushGce?
-
-	// if oldImage := getImage(project, constructTag(c)); oldImage != nil {
-	// 	oldDigest, _ = oldImage.Digest() // record gcr.io existing digest
-	// }
-	// if err := pushImage(project, constructTag(c)); err != nil {
-	// 	panic(err) // push gcr.io current image
-	// }
-	// if newImage := getImage(project, constructTag(c)); newImage != nil {
-	// 	newDigest, _ = newImage.Digest() // record gcr.io new digest
-	// }
-	// if len(oldDigest.Hex) > 0 && oldDigest.String() != newDigest.String() {
-	// 	if err := deleteImage(project, constructTag(c), oldDigest); err != nil {
-	// 		panic(err) // if digest changed, delete old image
-	// 	}
-	// }
-	return nil
+	return pushImage(target, tag, jsonBytes)
 }
 
 func pushGce(c *cli.Context) error {
@@ -1364,21 +1390,31 @@ func pushGce(c *cli.Context) error {
 	infile := inputDockerfile(c)
 	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
-		panic(err)
+		return err
 	}
 	var oldDigest, newDigest v1.Hash
-	if oldImage := getImage(project, constructTag(c)); oldImage != nil {
+	if oldImage := getImageGce(project, constructTag(c)); oldImage != nil {
 		oldDigest, _ = oldImage.Digest()
 	}
-	if err := pushImage(project, constructTag(c)); err != nil {
-		panic(err)
+
+	tag := constructTag(c)
+	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	if err != nil {
+		return err
 	}
-	if newImage := getImage(project, constructTag(c)); newImage != nil {
+	jsonBytes, _ := json.Marshal(map[string]string{
+		"username": "_json_key",
+		"password": string(bytes),
+	})
+	if err := pushImage(filepath.Join("gcr.io", project, tag), tag, jsonBytes); err != nil {
+		return err
+	}
+	if newImage := getImageGce(project, constructTag(c)); newImage != nil {
 		newDigest, _ = newImage.Digest()
 	}
 	if len(oldDigest.Hex) > 0 && oldDigest.String() != newDigest.String() {
-		if err := deleteImage(project, constructTag(c), oldDigest); err != nil {
-			panic(err)
+		if err := deleteImageGce(project, constructTag(c), oldDigest); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1640,7 +1676,6 @@ func RunLocalCommand() *cli.Command {
 }
 
 func getImages(tag string) ([]types.ImageSummary, error) {
-	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
@@ -1649,51 +1684,36 @@ func getImages(tag string) ([]types.ImageSummary, error) {
 		types.ImageListOptions{Filters: filters.NewArgs(filters.Arg("reference", tag))})
 }
 
-func pushImage(project string, tag string) error {
+func pushImage(target string, tag string, jsonBytes []byte) error {
 	if images, err := getImages(tag); err != nil || len(images) == 0 {
 		if len(images) == 0 {
-			panic(fmt.Sprintf("Image tagged %s not found", tag))
+			return errors.New(fmt.Sprintf("Image tagged %s not found", tag))
 		} else {
-			panic(err)
+			return err
 		}
 	}
-	target := filepath.Join("gcr.io", project, tag)
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		panic(err)
+		return err
 	}
-	err = cli.ImageTag(context.Background(), tag, target)
-	if err != nil {
-		panic(err)
+	if err := cli.ImageTag(context.Background(), tag, target); err != nil {
+		return err
 	}
 
 	if _, err := cli.ImagesPrune(context.Background(),
 		filters.NewArgs(filters.Arg("label", "gat="+tag))); err != nil {
-		panic(err)
+		return err
 	}
 
-	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-	if err != nil {
-		panic(err)
-	}
-	jsonBytes, _ := json.Marshal(map[string]string{
-		"username": "_json_key",
-		"password": string(bytes),
+	pushBody, err := cli.ImagePush(context.Background(), target, types.ImagePushOptions{
+		RegistryAuth: base64.StdEncoding.EncodeToString(jsonBytes),
 	})
-
-	pushBody, err := cli.ImagePush(context.Background(), target,
-		types.ImagePushOptions{
-			RegistryAuth: base64.StdEncoding.EncodeToString(jsonBytes),
-		})
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer pushBody.Close()
 	termFd, isTerm := term.GetFdInfo(os.Stderr)
-	if err = jsonmessage.DisplayJSONMessagesStream(pushBody, os.Stderr, termFd, isTerm, nil); err != nil {
-		panic(err)
-	}
-	return nil
+	return jsonmessage.DisplayJSONMessagesStream(pushBody, os.Stderr, termFd, isTerm, nil)
 }
 
 func buildBaseImage(cli *client.Client, baseTag string, infile string) (string, error) {
