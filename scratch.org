@@ -318,6 +318,10 @@ docker run --gpus all nvidia/cuda:10.0-base nvidia-smi
 packer-gat ami will have nvidia/cuda:gat, but ein-gat is built off jupyter/docker-stacks.
 Premise was user could have any *debian* base image he pleases, and I'd fill in the gat essentials.  So he's responsible for nvidia/cuda-10.1-runtime /avec/ tensorflow-notebook.  A pre-baked docker image on AMI would require --entrypoint and --volume arguments in the `docker run` invocation in cloud-config!
 
+ein:gat-base-images would need bespoke image off of Dockerfile.tensorflow-gpu.template.  okay then bespeak it.
+
+opensciencegrid/tensorflow-gpu assumes nvidia/cuda and recreates jupyter stuff (where as Dockerfile.tenosrflow-gpu.template assumes jupyter and recreates nvidia/cuda).
+
 ~"bash -c 'docker build -t nvidia/cuda:gat - < <(cat <<EOF\nFROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04\nRUN set -xe && apt-get -yq update && DEBIAN_FRONTEND=noninteractive apt-get -yq install python3 ipython3 python3-pip vim && python3 -m pip install --upgrade pip && python3 -m pip install tensorflow matplotlib\nEOF\n)'"~
 
 just show me the goods:

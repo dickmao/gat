@@ -1,4 +1,4 @@
-FROM jupyter/tensorflow-notebook
+FROM jupyter/tensorflow-notebook@sha256:5685ec9acb564c2c022d322d4d46c6f70db1df8e5afe9c8d4a4b33349675e456
 
 USER root
 
@@ -58,5 +58,3 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 USER $NB_UID
 
-COPY ./eager.ipynb .
-CMD [ "start.sh", "jupyter", "nbconvert", "--ExecutePreprocessor.timeout=21600", "--to", "notebook", "--execute", "eager.ipynb" ]
