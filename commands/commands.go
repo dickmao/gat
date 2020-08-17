@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/dickmao/gat/cos_gpu_installer"
 	"github.com/dickmao/gat/version"
@@ -104,6 +105,7 @@ var (
 	awsSession                 *session.Session
 	awsSts                     *sts.STS
 	awsEcr                     *ecr.ECR
+	awsS3                      *s3.S3
 	resourceManagerServiceOnce sync.Once
 	computeServiceOnce         sync.Once
 	containerServiceOnce       sync.Once
@@ -112,6 +114,7 @@ var (
 	awsSessionOnce             sync.Once
 	awsStsOnce                 sync.Once
 	awsEcrOnce                 sync.Once
+	awsS3Once                  sync.Once
 )
 
 type ServiceAccount struct {
@@ -159,7 +162,7 @@ func gatId(c *cli.Context) string {
 	return c.String("project") + "-" + strings.ReplaceAll(constructTag(c), ":", "-")
 }
 
-func ensureBucket(c *cli.Context) error {
+func ensureBucketGce(c *cli.Context) error {
 	bucket := getClientStorage().Bucket(gatId(c))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
@@ -172,7 +175,15 @@ func ensureBucket(c *cli.Context) error {
 	return nil
 }
 
-func gcsMount(c *cli.Context, pwd string) error {
+func ensureBucketAws(c *cli.Context) error {
+	return nil
+}
+
+func mountBucketAws(c *cli.Context, pwd string) error {
+	return nil
+}
+
+func mountBucketGce(c *cli.Context, pwd string) error {
 	bucket := gatId(c)
 	mountpoint := filepath.Join(pwd, "run-remote")
 	type runError struct {
@@ -231,6 +242,13 @@ func getClientStorage() *storage.Client {
 		}
 	})
 	return storageClient
+}
+
+func getAwsS3(awsregion string) *s3.S3 {
+	awsS3Once.Do(func() {
+		awsS3 = s3.New(getAwsSession(awsregion))
+	})
+	return awsS3
 }
 
 func getAwsSession(awsregion string) *session.Session {
@@ -425,8 +443,8 @@ func descriptorFromResponse(response *http.Response) (distribution.Descriptor, e
 	return desc, nil
 }
 
-func getImageAws(awsregion string, tag string) *string {
-	ecrRepoName, ecrRepoTag := func() (string, string) {
+func ensureRepoAws(awsregion string, tag string) {
+	ecrRepoName, _ := func() (string, string) {
 		x := strings.Split(tag, ":")
 		return x[0], x[1]
 	}()
@@ -448,7 +466,15 @@ func getImageAws(awsregion string, tag string) *string {
 			panic(err)
 		}
 	}
+}
 
+func getImageAws(awsregion string, tag string) *string {
+	ensureRepoAws(awsregion, tag)
+	ecrRepoName, ecrRepoTag := func() (string, string) {
+		x := strings.Split(tag, ":")
+		return x[0], x[1]
+	}()
+	svc := getAwsEcr(awsregion)
 	if extant, err := svc.BatchGetImage(&ecr.BatchGetImageInput{
 		ImageIds: []*ecr.ImageIdentifier{
 			{
@@ -690,7 +716,7 @@ func runRemoteAws(c *cli.Context) error {
 	if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
 		panic(err)
 	}
-	if err = ensureBucket(c); err != nil {
+	if err = ensureBucketAws(c); err != nil {
 		panic(err)
 	}
 
@@ -700,7 +726,7 @@ func runRemoteAws(c *cli.Context) error {
 	} else {
 		pwd = filepath.Dir(filepath.Clean(repo.Path()))
 	}
-	if err := gcsMount(c, pwd); err != nil {
+	if err := mountBucketAws(c, pwd); err != nil {
 		panic(err)
 	}
 
@@ -1058,7 +1084,7 @@ func RegistryCommand() *cli.Command {
 		Action: func(c *cli.Context) error {
 			// project := c.String("project")
 			// repo := c.Context.Value(repoKey).(*git.Repository)
-			if err := ensureBucket(c); err != nil {
+			if err := ensureBucketGce(c); err != nil {
 				panic(err)
 			}
 			project := c.String("project")
@@ -1349,6 +1375,10 @@ func pushAws(c *cli.Context) error {
 		return err
 	}
 	// getImageAws(project, constructTag(c))
+
+	tag := constructTag(c)
+	ensureRepoAws(awsregion, tag)
+
 	svc := getAwsEcr(awsregion)
 	token, err := svc.GetAuthorizationToken(&ecr.GetAuthorizationTokenInput{})
 	if err != nil {
@@ -1370,7 +1400,6 @@ func pushAws(c *cli.Context) error {
 		x := strings.Split(string(passbytes), ":")
 		return x[0], x[1]
 	}()
-	tag := constructTag(c)
 	target := filepath.Join(server, tag)
 	jsonBytes, _ := json.Marshal(types.AuthConfig{
 		Username: username,
@@ -1453,7 +1482,7 @@ func runRemoteGce(c *cli.Context) error {
 	if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
 		panic(err)
 	}
-	if err = ensureBucket(c); err != nil {
+	if err = ensureBucketGce(c); err != nil {
 		panic(err)
 	}
 
@@ -1463,7 +1492,7 @@ func runRemoteGce(c *cli.Context) error {
 	} else {
 		pwd = filepath.Dir(filepath.Clean(repo.Path()))
 	}
-	if err := gcsMount(c, pwd); err != nil {
+	if err := mountBucketGce(c, pwd); err != nil {
 		panic(err)
 	}
 
