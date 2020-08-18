@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime/pprof"
@@ -29,6 +30,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -176,12 +178,7 @@ func ensureBucketGce(c *cli.Context) error {
 	return nil
 }
 
-func ensureBucketAws(c *cli.Context, awsregion string) error {
-	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
-	if err != nil {
-		return err
-	}
-	bucket := gatId(c, *identity.Account)
+func ensureBucketAws(c *cli.Context, awsregion string, bucket string) error {
 	result, err := getAwsS3(awsregion).ListBuckets(&s3.ListBucketsInput{})
 	for _, v := range result.Buckets {
 		if *v.Name == bucket {
@@ -197,9 +194,71 @@ func ensureBucketAws(c *cli.Context, awsregion string) error {
 	return err
 }
 
+func getBucketNameAws(c *cli.Context, awsregion string) string {
+	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	if err != nil {
+		panic(err)
+	}
+	return gatId(c, *identity.Account)
+}
+
 func mountBucketAws(c *cli.Context, awsregion string, pwd string) error {
-	if err := ensureBucketAws(c, awsregion); err != nil {
+	bucket := getBucketNameAws(c, awsregion)
+	if err := ensureBucketAws(c, awsregion, bucket); err != nil {
 		return err
+	}
+	mountpoint := filepath.Join(pwd, "run-remote")
+	type runError struct {
+		error
+		output []byte
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			exec.Command("fusermount", "-u", mountpoint).Run()
+			if runerr, ok := r.(runError); ok {
+				fmt.Printf("%s\n", string(runerr.output))
+			}
+			panic(r)
+		}
+	}()
+	// `results` subdir can be mounted even if it doesn't exist yet.
+	if err := exec.Command("grep", "-qs", mountpoint+" ", "/proc/mounts").Run(); err != nil {
+		if err := os.MkdirAll(mountpoint, 0755); err != nil {
+			panic(err)
+		}
+		current, _ := user.Current()
+		creds := credentials.NewChainCredentials(
+			[]credentials.Provider{
+				&credentials.SharedCredentialsProvider{},
+				&credentials.EnvProvider{},
+			})
+		credValue, err := creds.Get()
+		if err != nil {
+			panic(err)
+		}
+		args := []string{
+			fmt.Sprintf("AWS_ACCESS_KEY_ID=%s", credValue.AccessKeyID),
+			fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", credValue.SecretAccessKey),
+			"s3fs",
+			mountpoint,
+			"-o",
+			fmt.Sprintf("url=https://s3.%s.amazonaws.com", awsregion),
+			"-o",
+			fmt.Sprintf("bucket=%s:/run-local", bucket),
+			"-o",
+			fmt.Sprintf("uid=%s", current.Uid),
+			"-o",
+			fmt.Sprintf("umask=277"),
+			"-o",
+			fmt.Sprintf("gid=%s", current.Gid),
+		}
+		if strings.Contains(bucket, ".") {
+			args = append(args, "-o", "use_path_request_style")
+		}
+		cmd := exec.Command("env", args...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			panic(runError{err, output})
+		}
 	}
 	return nil
 }
@@ -696,6 +755,18 @@ func TestCommand() *cli.Command {
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
+			repo := c.Context.Value(repoKey).(*git.Repository)
+			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			awsregion := c.String("awsregion")
+			var pwd string
+			if worktree != nil {
+				pwd = worktree.Path()
+			} else {
+				pwd = filepath.Dir(filepath.Clean(repo.Path()))
+			}
+			if err := mountBucketAws(c, awsregion, pwd); err != nil {
+				panic(err)
+			}
 			return nil
 		},
 	}
