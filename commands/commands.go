@@ -158,15 +158,16 @@ func (ctx *wrapper) Value(key interface{}) interface{} {
 	}
 }
 
-func gatId(c *cli.Context) string {
-	return c.String("project") + "-" + strings.ReplaceAll(constructTag(c), ":", "-")
+func gatId(c *cli.Context, prefix string) string {
+	return prefix + "-" + strings.ReplaceAll(constructTag(c), ":", "-")
 }
 
 func ensureBucketGce(c *cli.Context) error {
-	bucket := getClientStorage().Bucket(gatId(c))
+	project := c.String("project")
+	bucket := getClientStorage().Bucket(gatId(c, project))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
-	if err := bucket.Create(ctx, c.String("project"), &storage.BucketAttrs{}); err != nil {
+	if err := bucket.Create(ctx, project, &storage.BucketAttrs{}); err != nil {
 		if err.(*googleapi.Error).Code == 409 {
 			return nil
 		}
@@ -175,16 +176,39 @@ func ensureBucketGce(c *cli.Context) error {
 	return nil
 }
 
-func ensureBucketAws(c *cli.Context) error {
-	return nil
+func ensureBucketAws(c *cli.Context, awsregion string) error {
+	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	if err != nil {
+		return err
+	}
+	bucket := gatId(c, *identity.Account)
+	result, err := getAwsS3(awsregion).ListBuckets(&s3.ListBucketsInput{})
+	for _, v := range result.Buckets {
+		if *v.Name == bucket {
+			return nil
+		}
+	}
+	_, err = getAwsS3(awsregion).CreateBucket(&s3.CreateBucketInput{
+		Bucket: aws.String(bucket),
+		CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+			LocationConstraint: aws.String(awsregion),
+		},
+	})
+	return err
 }
 
-func mountBucketAws(c *cli.Context, pwd string) error {
+func mountBucketAws(c *cli.Context, awsregion string, pwd string) error {
+	if err := ensureBucketAws(c, awsregion); err != nil {
+		return err
+	}
 	return nil
 }
 
 func mountBucketGce(c *cli.Context, pwd string) error {
-	bucket := gatId(c)
+	if err := ensureBucketGce(c); err != nil {
+		return err
+	}
+	bucket := gatId(c, c.String("project"))
 	mountpoint := filepath.Join(pwd, "run-remote")
 	type runError struct {
 		error
@@ -716,9 +740,6 @@ func runRemoteAws(c *cli.Context) error {
 	if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
 		panic(err)
 	}
-	if err = ensureBucketAws(c); err != nil {
-		panic(err)
-	}
 
 	var pwd string
 	if worktree != nil {
@@ -726,7 +747,7 @@ func runRemoteAws(c *cli.Context) error {
 	} else {
 		pwd = filepath.Dir(filepath.Clean(repo.Path()))
 	}
-	if err := mountBucketAws(c, pwd); err != nil {
+	if err := mountBucketAws(c, awsregion, pwd); err != nil {
 		panic(err)
 	}
 
@@ -739,7 +760,11 @@ func runRemoteAws(c *cli.Context) error {
 	}
 
 	bytes, newline_escaped, err := escapeCredentials()
-	user_data := UserDataAws(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp", gpus)
+	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	if err != nil {
+		return err
+	}
+	user_data := UserDataAws(c, project, constructTag(c), fmt.Sprintf("s3://%s", gatId(c, *identity.Account)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp", gpus)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		tag := constructTag(c)
@@ -1482,10 +1507,6 @@ func runRemoteGce(c *cli.Context) error {
 	if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
 		panic(err)
 	}
-	if err = ensureBucketGce(c); err != nil {
-		panic(err)
-	}
-
 	var pwd string
 	if worktree != nil {
 		pwd = worktree.Path()
@@ -1497,7 +1518,7 @@ func runRemoteGce(c *cli.Context) error {
 	}
 
 	bytes, newline_escaped, err := escapeCredentials()
-	user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+	user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c, project)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		tag := constructTag(c)
@@ -1514,7 +1535,7 @@ func runRemoteGce(c *cli.Context) error {
 			}
 		}
 	}
-	shutdown_script := Shutdown(c, project, constructTag(c), gatId(c), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+	shutdown_script := Shutdown(c, project, constructTag(c), gatId(c, project), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
 	var serviceAccount ServiceAccount
 	json.Unmarshal(bytes, &serviceAccount)
 	prefix := "https://www.googleapis.com/compute/v1/projects/" + project
@@ -1539,7 +1560,7 @@ func runRemoteGce(c *cli.Context) error {
 	run_cuda_test := cos_gpu_installer.Run_cuda_test
 	run_installer := cos_gpu_installer.Run_installer
 	instance := &compute.Instance{
-		Name:        gatId(c),
+		Name:        gatId(c, project),
 		Description: "gat compute instance",
 		MachineType: prefix + "/zones/" + zone + "/machineTypes/" + machine,
 		Metadata: &compute.Metadata{
