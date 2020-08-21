@@ -299,8 +299,12 @@ on t2.micro:
 aws ec2 --region $(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region) terminate-instances --instance-ids $(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .instanceId) --dry-run
 
 testing:
-aws iam remove-role-from-instance-profile --instance-profile-name gat --role-name gatServiceRole ; aws iam delete-instance-profile --instance-profile-name gat
 aws iam list-instance-profiles | jq -r '.InstanceProfiles'
+
+regen gat, gatServiceRole:
+aws iam remove-role-from-instance-profile --instance-profile-name gat --role-name gatServiceRole ; aws iam delete-instance-profile --instance-profile-name gat
+for policy in $(aws --region us-east-2 iam list-attached-role-policies --role-name gatServiceRole --query 'AttachedPolicies[*].PolicyArn' --output text) ; do aws iam detach-role-policy --role-name gatServiceRole --policy-arn $policy ; done ;
+aws iam delete-role --role-name gatServiceRole
 
 ssh ec2-user@$(aws ec2 --region us-east-2 describe-instances --filters Name=instance-state-code,Values=16,64,80 --query Reservations[*].Instances[*].[PublicDnsName] --output text)
 
@@ -337,7 +341,7 @@ Under gce, I jamp through hoops to avoid installing gsutil on the cos image, and
 
 Suppose -v /var/tmp:/var/tmp, and I `ln` changed files to /var/tmp in hopes of `gsutil rsync -r /var/tmp` on host.  The `ln` fails for `failed to create hard link Invalid cross-device link'
 
-So I *do* need to gsutil from docker ... need -net "host"?
+So I *do* need to gsutil from docker ... need -net "host"?  Later: it's just working.
 
 *** TODO Explore https://github.com/NVIDIA/nvidia-docker/wiki/NGC
 

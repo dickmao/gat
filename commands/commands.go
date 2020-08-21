@@ -785,55 +785,6 @@ func TestCommand() *cli.Command {
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			config := c.Context.Value(configKey).(*git.Config)
-			project := c.String("project")
-			zone := c.String("zone")
-			region := c.String("region")
-			awsregion := c.String("awsregion")
-			infile := inputDockerfile(c)
-			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "push", "--dockerfile", infile}); err != nil {
-				panic(err)
-			}
-			config1, err := repo1.Config()
-			if err != nil {
-				panic(err)
-			}
-			if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
-				panic(err)
-			}
-
-			var pwd string
-			if worktree != nil {
-				pwd = worktree.Path()
-			} else {
-				pwd = filepath.Dir(filepath.Clean(repo.Path()))
-			}
-			if err := mountBucketAws(c, awsregion, pwd); err != nil {
-				panic(err)
-			}
-
-			machine := c.String("machine")
-			var gpus string
-			if len(machine) == 0 {
-				machine = "t2.micro"
-			} else if ok, _ := regexp.Match(`^g`, []byte(machine)); ok {
-				gpus = " --gpus all"
-			}
-
-			var aws_credentials string
-			if result, ok := os.LookupEnv("AWS_SHARED_CREDENTIALS_FILE"); ok {
-				aws_credentials = result
-			} else {
-				aws_credentials = filepath.Join(os.Getenv("HOME"), ".aws", "config")
-			}
-			_, newline_escaped, err := escapeCredentials(aws_credentials)
-
-			tag := constructTag(c)
-			UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), newline_escaped, gpus)
 			return nil
 		},
 	}
@@ -911,16 +862,8 @@ func runRemoteAws(c *cli.Context) error {
 		gpus = " --gpus all"
 	}
 
-	var aws_credentials string
-	if result, ok := os.LookupEnv("AWS_SHARED_CREDENTIALS_FILE"); ok {
-		aws_credentials = result
-	} else {
-		aws_credentials = filepath.Join(os.Getenv("HOME"), ".aws", "credentials")
-	}
-	_, newline_escaped, err := escapeCredentials(aws_credentials)
-
 	tag := constructTag(c)
-	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), newline_escaped, gpus)
+	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), gpus)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		if images, err := getImages(tag); err != nil || len(images) == 0 {

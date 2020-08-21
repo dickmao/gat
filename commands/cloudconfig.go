@@ -24,9 +24,9 @@ var (
 	gat0 = []string{
 		`/bin/bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/run-caches || true"`,
 		`/bin/bash -c "docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container {{ .Tag }} -c \"touch sentinel\""`,
-		`/bin/bash -c "[ -d {{ .Bucket }} ] || docker cp {{ .Workdir }}/credentials gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/"`,
+		`/bin/bash -c "[ -d {{ .Bucket }} ] || [ -f {{ .Workdir }}/credentials ] && docker cp {{ .Workdir }}/credentials gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/ || true"`,
 		`/bin/bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
-		`/bin/bash -c "function gsutil { docker run --rm --entrypoint bash gat-sentinel0 -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./credentials) -o Credentials:aws_access_key_id=\\$(realpath ./credentials) $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-sentinel-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-sentinel-container) ; do LINE=$(gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \") ; if [ ! -z \"$LINE\" ]; then gsutil_cat {{ .Bucket }}/run-caches/$${LINE#* } | docker cp - gat-sentinel-container:$(dirname $${LINE% *}) ; fi ; done "`,
+		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; function gsutil { docker run --rm --entrypoint bash gat-sentinel0 -c \"gsutil -m -o $GSUTILOPT $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-sentinel-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-sentinel-container) ; do LINE=$(gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \") ; if [ ! -z \"$LINE\" ]; then gsutil_cat {{ .Bucket }}/run-caches/$${LINE#* } | docker cp - gat-sentinel-container:$(dirname $${LINE% *}) ; fi ; done "`,
 		`/usr/bin/docker rmi gat-sentinel0`,
 		`/bin/bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
 		`/usr/bin/docker rm gat-sentinel-container`,
@@ -40,9 +40,9 @@ var (
 		`/usr/bin/docker rm gat-run-container`,
 		`/usr/bin/docker rmi gat-sentinel`,
 		`/bin/bash -c "[ -d {{ .Bucket }} ] && mkdir -p {{ .Bucket }}/run-local || true"`,
-		`/bin/bash -c "docker run --name gat-cache-container -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( [ \\$(realpath .) = '/' ] && export SYSDIRS='\\( -name boot -o -name dev -o -name etc -o -name home -o -name lib -o -name lib64 -o -name media -o -name mnt -o -name opt -o -name proc -o -name run -o -name sbin -o -name srv -o -name sys -o -name tmp -o -name usr -o -name var -o -name bin \\) -prune -o' ; for f in \\$(eval find . \\$SYSDIRS -not -path \\'*/.*\\' -type f -newer sentinel -print) ; do mkdir -p ./run-local/\\$(dirname \\$f) ; ln \\$(realpath \\$f) ./run-local/\\$f ; done ; ) && ( if [ -d ./run-local ]; then gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./credentials) rsync -r run-local $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/run-local ; fi ) \""`,
+		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; docker run --name gat-cache-container -v $([ -d {{ .Bucket }} ] && echo -n {{ .Bucket }} || echo -n $(pwd)):/hostpwd --entrypoint \"/bin/bash\" gat-run -c \"( [ \\$(realpath .) = '/' ] && export SYSDIRS='\\( -name boot -o -name dev -o -name etc -o -name home -o -name lib -o -name lib64 -o -name media -o -name mnt -o -name opt -o -name proc -o -name run -o -name sbin -o -name srv -o -name sys -o -name tmp -o -name usr -o -name var -o -name bin \\) -prune -o' ; for f in \\$(eval find . \\$SYSDIRS -not -path \\'*/.*\\' -type f -newer sentinel -print) ; do mkdir -p ./run-local/\\$(dirname \\$f) ; ln \\$(realpath \\$f) ./run-local/\\$f ; done ; ) && ( if [ -d ./run-local ]; then gsutil -m -o $GSUTILOPT rsync -r run-local $([ -d {{ .Bucket }} ] && echo -n /hostpwd || echo -n {{ .Bucket }})/run-local ; fi ) \""`,
 		// https://stackoverflow.com/a/16951928/5132008 R. Galli
-		`/bin/bash -c "function gsutil { docker run --rm --entrypoint bash gat-run -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./credentials) $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; function gsutil_cp { if [ -d {{ .Bucket }} ]; then cp $1 $2 ; else docker run -v $(dirname $1):/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o Credentials:gs_service_key_file=\\$(realpath ./credentials) cp /hostpwd/\\$(basename $1) $2\" ; fi ; } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-cache-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-cache-container) ; do if ! gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \" ; then RAND=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 7 ; echo ''); docker cp gat-cache-container:$cache - > /var/tmp/$RAND.tar ; echo \"$cache $RAND.tar\" >> /var/tmp/manifest.$KEY ; for f in $RAND.tar manifest.$KEY ; do gsutil_cp /var/tmp/$f {{ .Bucket }}/run-caches/$f ; done ; rm -f /var/tmp/$RAND.tar; fi ; done ; rm -f /var/tmp/manifest.$KEY ;"`,
+		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; function gsutil { docker run --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; function gsutil_cp { if [ -d {{ .Bucket }} ]; then cp $1 $2 ; else docker run -v $(dirname $1):/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT cp /hostpwd/\\$(basename $1) $2\" ; fi ; } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-cache-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-cache-container) ; do if ! gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \" ; then RAND=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 7 ; echo ''); docker cp gat-cache-container:$cache - > /var/tmp/$RAND.tar ; echo \"$cache $RAND.tar\" >> /var/tmp/manifest.$KEY ; for f in $RAND.tar manifest.$KEY ; do gsutil_cp /var/tmp/$f {{ .Bucket }}/run-caches/$f ; done ; rm -f /var/tmp/$RAND.tar; fi ; done ; rm -f /var/tmp/manifest.$KEY ;"`,
 		`/usr/bin/docker rm gat-cache-container`,
 		`/usr/bin/docker rmi gat-run`,
 	}
@@ -143,8 +143,7 @@ write_files:
     WorkingDirectory={{ .Workdir }}
     User=ec2-user
     Type=oneshot
-    ExecStart=/bin/bash -c "echo $'{{ .ServiceAccountJsonContent }}' >{{ .Workdir }}/credentials && chmod 600 {{ .Workdir }}/credentials"
-    ExecStart=/bin/bash -c "{{ .ServiceAccountEnv }}={{ .Workdir }}/credentials /usr/bin/docker pull {{ .RepositoryUri }}"
+    ExecStart=/bin/bash -c "eval $(aws --region $(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region) ecr get-login --no-include-email)"
     ExecStart=/bin/bash -c "/usr/bin/docker pull {{ .RepositoryUri }}"
     ExecStart=/usr/bin/docker tag {{ .RepositoryUri }} {{ .Tag }}
 {{ range .Gat0 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
@@ -220,8 +219,8 @@ func DockerCommands(c *cli.Context, tag string, bucket string) string {
 	return commands
 }
 
-func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, serviceAccountJsonContent string, gpus string) string {
-	runcmd := []string{"daemon-reload", "start gat0.service", "start gat1.service"}
+func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, gpus string) string {
+	runcmd := []string{"daemon-reload", "start aws-gat0.service", "start aws-gat1.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start aws-shutdown.service")
 	}
@@ -235,15 +234,14 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 		t := template.Must(template.New("CloudConfig").Parse(userdata))
 		var buf bytes.Buffer
 		if err := t.Execute(&buf, CloudConfig{
-			Tag:                       tag,
-			RepositoryUri:             repositoryUri,
-			Bucket:                    bucket,
-			ServiceAccountJsonContent: serviceAccountJsonContent,
-			ServiceAccountEnv:         "AWS_SHARED_CREDENTIALS_FILE",
-			Workdir:                   "/home/ec2-user",
-			Gpus:                      gpus,
-			Gat0:                      gat0,
-			Gat1:                      gat1,
+			Tag:               tag,
+			RepositoryUri:     repositoryUri,
+			Bucket:            bucket,
+			ServiceAccountEnv: "AWS_SHARED_CREDENTIALS_FILE",
+			Workdir:           "/home/ec2-user",
+			Gpus:              gpus,
+			Gat0:              gat0,
+			Gat1:              gat1,
 		}); err != nil {
 			panic(err)
 		}
