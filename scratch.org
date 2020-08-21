@@ -327,6 +327,18 @@ opensciencegrid/tensorflow-gpu assumes nvidia/cuda and recreates jupyter stuff (
 just show me the goods:
 cat eager.nbconvert.ipynb | jq '..|.text?'
 
+** gsutil s3
+
+gsutil -o Credentials:aws_access_key_id=AKIAIY5QIBXHBAAIK2TA -o Credentials:aws_secret_access_key=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 -o s3:host=s3-us-east-2.amazonaws.com cp eager.ipynb s3://303634175659-test-repo2-master/run-local/
+
+shuttling one's AWS_DEFAULT_SHARED_CREDENTIALS is problematic.
+
+Under gce, I jamp through hoops to avoid installing gsutil on the cos image, and only having it in the docker image.  But if I resign myself to having gsutil on the ec2 ami, then I can `gsutil {cat,cp} s3` with abandon (avoiding `docker run gsutil` contortion).
+
+Suppose -v /var/tmp:/var/tmp, and I `ln` changed files to /var/tmp in hopes of `gsutil rsync -r /var/tmp` on host.  The `ln` fails for `failed to create hard link Invalid cross-device link'
+
+So I *do* need to gsutil from docker ... need -net "host"?
+
 *** TODO Explore https://github.com/NVIDIA/nvidia-docker/wiki/NGC
 
 

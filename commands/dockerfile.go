@@ -20,7 +20,7 @@ func DockerfileSource(c *cli.Context, cli *client.Client, imageId string) []byte
   && echo "deb http://packages.cloud.google.com/apt $GCSFUSE_REPO main" | tee /etc/apt/sources.list.d/gcsfuse.list \
   && wget -qO- https://packages.cloud.google.com/apt/doc/apt-key.gpg | APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1 apt-key add - \
   && apt-get -yq update \
-  && DEBIAN_FRONTEND=noninteractive apt-get -y install gcsfuse s3fs-fuse \
+  && DEBIAN_FRONTEND=noninteractive apt-get -y install gcsfuse s3fs \
   && wget -q https://storage.googleapis.com/pub/gsutil.tar.gz \
   && tar xfz gsutil.tar.gz -C /opt \
   && rm -f gsutil.tar.gz \

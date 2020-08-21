@@ -237,6 +237,7 @@ func mountBucketAws(c *cli.Context, awsregion string, pwd string) error {
 			panic(err)
 		}
 		args := []string{
+			// s3fs v1.82 cannot read ~/.aws/credentials
 			fmt.Sprintf("AWS_ACCESS_KEY_ID=%s", credValue.AccessKeyID),
 			fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", credValue.SecretAccessKey),
 			"s3fs",
@@ -248,7 +249,7 @@ func mountBucketAws(c *cli.Context, awsregion string, pwd string) error {
 			"-o",
 			fmt.Sprintf("uid=%s", current.Uid),
 			"-o",
-			fmt.Sprintf("umask=277"),
+			fmt.Sprintf("umask=077"),
 			"-o",
 			fmt.Sprintf("gid=%s", current.Gid),
 		}
@@ -310,7 +311,7 @@ func headCommit(repo *git.Repository) (*git.Commit, error) {
 	return commit, nil
 }
 
-func ensureApplicationDefaultCredentials() {
+func ensureCredentialsGce() {
 	if _, ok := os.LookupEnv("GOOGLE_APPLICATION_CREDENTIALS"); !ok {
 		panic("Set GOOGLE_APPLICATION_CREDENTIALS to service_account.json")
 	}
@@ -318,7 +319,7 @@ func ensureApplicationDefaultCredentials() {
 
 func getClientStorage() *storage.Client {
 	storageClientOnce.Do(func() {
-		ensureApplicationDefaultCredentials()
+		ensureCredentialsGce()
 		var err error
 		if storageClient, err = storage.NewClient(context.Background()); err != nil {
 			panic(err)
@@ -362,7 +363,7 @@ func getAwsEcr(awsregion string) *ecr.ECR {
 
 func getMyAuthn() *authn.Basic {
 	myAuthnOnce.Do(func() {
-		ensureApplicationDefaultCredentials()
+		ensureCredentialsGce()
 		bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 		if err != nil {
 			panic(err)
@@ -374,7 +375,7 @@ func getMyAuthn() *authn.Basic {
 
 func getServiceResourceManager() *cloudresourcemanager.Service {
 	resourceManagerServiceOnce.Do(func() {
-		ensureApplicationDefaultCredentials()
+		ensureCredentialsGce()
 		ctx := context.Background()
 
 		creds, err := google.FindDefaultCredentials(ctx, cloudresourcemanager.CloudPlatformScope)
@@ -392,7 +393,7 @@ func getServiceResourceManager() *cloudresourcemanager.Service {
 
 func getService() *compute.Service {
 	computeServiceOnce.Do(func() {
-		ensureApplicationDefaultCredentials()
+		ensureCredentialsGce()
 		ctx := context.Background()
 		creds, err := google.FindDefaultCredentials(ctx, compute.CloudPlatformScope)
 		if err != nil {
@@ -412,7 +413,7 @@ func getService() *compute.Service {
 
 func getContainerService() *container.Service {
 	containerServiceOnce.Do(func() {
-		ensureApplicationDefaultCredentials()
+		ensureCredentialsGce()
 		ctx := context.Background()
 
 		creds, err := google.FindDefaultCredentials(ctx, container.CloudPlatformScope)
@@ -551,7 +552,7 @@ func ensureRepoAws(awsregion string, tag string) {
 	}
 }
 
-func getImageAws(awsregion string, tag string) *string {
+func getImageAws(awsregion string, tag string) (string, error) {
 	ensureRepoAws(awsregion, tag)
 	ecrRepoName, ecrRepoTag := func() (string, string) {
 		x := strings.Split(tag, ":")
@@ -566,11 +567,11 @@ func getImageAws(awsregion string, tag string) *string {
 		},
 		RepositoryName: aws.String(ecrRepoName),
 	}); err != nil {
-		panic(err)
+		return "", err
 	} else if len(extant.Images) > 0 {
-		return extant.Images[0].ImageId.ImageDigest
+		return *extant.Images[0].ImageId.ImageDigest, nil
 	}
-	return nil
+	return "", errors.New(fmt.Sprintf("No extant image %s in %s", ecrRepoTag, ecrRepoName))
 }
 
 func getImageGce(project string, tag string) v1.Image {
@@ -593,6 +594,27 @@ func deleteImageGce(project string, tag string, digest v1.Hash) error {
 	return nil
 }
 
+func deleteImageAws(awsregion string, tag string, digest string) error {
+	ecrRepoName, _ := func() (string, string) {
+		x := strings.Split(tag, ":")
+		return x[0], x[1]
+	}()
+	svc := getAwsEcr(awsregion)
+	if result, err := svc.BatchDeleteImage(&ecr.BatchDeleteImageInput{
+		ImageIds: []*ecr.ImageIdentifier{
+			{
+				ImageDigest: aws.String(digest),
+			},
+		},
+		RepositoryName: aws.String(ecrRepoName),
+	}); err != nil {
+		return err
+	} else if len(result.Failures) > 0 {
+		return errors.New(fmt.Sprintf("BatchDeleteImage %s: %s (%s)", result.Failures[0].ImageId.ImageDigest, result.Failures[0].FailureReason, result.Failures[0].FailureCode))
+	}
+	return nil
+}
+
 func requiredHack(c *cli.Context, cmd string, args []string) []string {
 	if c.Args().Len() != len(args) {
 		// https://github.com/urfave/cli/pull/140#issuecomment-131841364
@@ -610,8 +632,8 @@ func requiredHack(c *cli.Context, cmd string, args []string) []string {
 	return required
 }
 
-func escapeCredentials() ([]byte, string, error) {
-	bytes, err := ioutil.ReadFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+func escapeCredentials(filename string) ([]byte, string, error) {
+	bytes, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return bytes, "", err
 	}
@@ -687,11 +709,7 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 					AssumeRolePolicyDocument: aws.String(policyDocument),
 					RoleName:                 aws.String(instanceProfileRoleName),
 				}); err != nil {
-					if aerr, ok := err.(awserr.Error); ok {
-						return nil, aerr
-					} else {
-						return nil, err
-					}
+					return nil, err
 				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
 					PolicyArn: aws.String("arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"),
 					RoleName:  aws.String(instanceProfileRoleName),
@@ -699,16 +717,28 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 					svcIam.DeleteRole(&iam.DeleteRoleInput{
 						RoleName: aws.String(instanceProfileRoleName),
 					})
-					if aerr, ok := err.(awserr.Error); ok {
-						return nil, aerr
-					} else {
-						return nil, err
-					}
+					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/AmazonS3FullAccess"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
 				} else {
 					instanceProfileRole = result.Role
 				}
 			default:
-				return nil, aerr
+				return nil, err
 			}
 		} else {
 			return nil, err
@@ -756,8 +786,26 @@ func TestCommand() *cli.Command {
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
 			repo := c.Context.Value(repoKey).(*git.Repository)
+			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
+			config := c.Context.Value(configKey).(*git.Config)
+			project := c.String("project")
+			zone := c.String("zone")
+			region := c.String("region")
 			awsregion := c.String("awsregion")
+			infile := inputDockerfile(c)
+			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "push", "--dockerfile", infile}); err != nil {
+				panic(err)
+			}
+			config1, err := repo1.Config()
+			if err != nil {
+				panic(err)
+			}
+			if err := config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*"); err != nil {
+				panic(err)
+			}
+
 			var pwd string
 			if worktree != nil {
 				pwd = worktree.Path()
@@ -767,6 +815,25 @@ func TestCommand() *cli.Command {
 			if err := mountBucketAws(c, awsregion, pwd); err != nil {
 				panic(err)
 			}
+
+			machine := c.String("machine")
+			var gpus string
+			if len(machine) == 0 {
+				machine = "t2.micro"
+			} else if ok, _ := regexp.Match(`^g`, []byte(machine)); ok {
+				gpus = " --gpus all"
+			}
+
+			var aws_credentials string
+			if result, ok := os.LookupEnv("AWS_SHARED_CREDENTIALS_FILE"); ok {
+				aws_credentials = result
+			} else {
+				aws_credentials = filepath.Join(os.Getenv("HOME"), ".aws", "config")
+			}
+			_, newline_escaped, err := escapeCredentials(aws_credentials)
+
+			tag := constructTag(c)
+			UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), newline_escaped, gpus)
 			return nil
 		},
 	}
@@ -790,6 +857,20 @@ func RunRemoteCommand() *cli.Command {
 	}
 }
 
+func repositoryUriGce(c *cli.Context) string {
+	project := c.String("project")
+	tag := constructTag(c)
+	return filepath.Join("gcr.io", project, tag)
+}
+
+func repositoryUriAws(c *cli.Context) string {
+	awsregion := c.String("awsregion")
+	tag := constructTag(c)
+	identity, _ := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	server := fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", *identity.Account, awsregion)
+	return filepath.Join(server, tag)
+}
+
 func runRemoteAws(c *cli.Context) error {
 	repo := c.Context.Value(repoKey).(*git.Repository)
 	repo1 := c.Context.Value(repo1Key).(*git.Repository)
@@ -801,7 +882,7 @@ func runRemoteAws(c *cli.Context) error {
 	awsregion := c.String("awsregion")
 	infile := inputDockerfile(c)
 	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "push", "--dockerfile", infile}); err != nil {
 		panic(err)
 	}
 	config1, err := repo1.Config()
@@ -830,15 +911,18 @@ func runRemoteAws(c *cli.Context) error {
 		gpus = " --gpus all"
 	}
 
-	bytes, newline_escaped, err := escapeCredentials()
-	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
-	if err != nil {
-		return err
+	var aws_credentials string
+	if result, ok := os.LookupEnv("AWS_SHARED_CREDENTIALS_FILE"); ok {
+		aws_credentials = result
+	} else {
+		aws_credentials = filepath.Join(os.Getenv("HOME"), ".aws", "credentials")
 	}
-	user_data := UserDataAws(c, project, constructTag(c), fmt.Sprintf("s3://%s", gatId(c, *identity.Account)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp", gpus)
+	_, newline_escaped, err := escapeCredentials(aws_credentials)
+
+	tag := constructTag(c)
+	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), newline_escaped, gpus)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
-		tag := constructTag(c)
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
 			if len(images) == 0 {
 				panic(fmt.Sprintf("Image tagged %s not found", tag))
@@ -852,8 +936,6 @@ func runRemoteAws(c *cli.Context) error {
 			}
 		}
 	}
-	var serviceAccount ServiceAccount
-	json.Unmarshal(bytes, &serviceAccount)
 	sess, err := session.NewSessionWithOptions(session.Options{
 		Config: aws.Config{
 			Region: aws.String(awsregion),
@@ -879,12 +961,20 @@ func runRemoteAws(c *cli.Context) error {
 				MarketType:  aws.String(ec2.MarketTypeSpot),
 				SpotOptions: &ec2.SpotMarketOptions{},
 			},
-			ImageId:      aws.String("ami-0d84e5dc06b638003"),
+			ImageId:      aws.String("ami-08f0ed8a0f25cb70c"),
 			InstanceType: aws.String(machine),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
 			KeyName:      aws.String("dick"),
 			UserData:     &user_data,
+			BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+				{
+					DeviceName: aws.String("/dev/sdh"),
+					Ebs: &ec2.EbsBlockDevice{
+						VolumeSize: aws.Int64(diskSizeGb),
+					},
+				},
+			},
 		})
 		if err != nil {
 			if reqErr, ok := err.(awserr.RequestFailure); ok {
@@ -906,7 +996,7 @@ func runRemoteAws(c *cli.Context) error {
 		Tags: []*ec2.Tag{
 			{
 				Key:   aws.String("Name"),
-				Value: aws.String(constructTag(c)),
+				Value: aws.String(tag),
 			},
 		},
 	}); errtag != nil {
@@ -931,69 +1021,80 @@ func LogCommand() *cli.Command {
 		Name:  "log",
 		Flags: logFlags(),
 		Action: func(c *cli.Context) error {
-			computeService, err := compute.NewService(context.Background(), option.WithScopes(compute.ComputeReadonlyScope))
-			if err != nil {
-				panic(err)
+			if isAwsRegion(c.String("awsregion")) {
+				return logAws(c)
 			}
-			filter := []string{}
-			filter = append(filter, fmt.Sprintf("(operationType = \"insert\")"))
-			serviceAccountBytes, _, _ := escapeCredentials()
-			var serviceAccount ServiceAccount
-			json.Unmarshal(serviceAccountBytes, &serviceAccount)
-			filter = append(filter, fmt.Sprintf("(user = \"%s\")", serviceAccount.Client_email))
-			project := c.String("project")
-			zone := c.String("zone")
-			var lastInstanceId uint64
-			for follow := true; lastInstanceId == 0 && follow; follow = c.Bool("follow") {
-				if err := compute.NewZoneOperationsService(computeService).List(project, zone).Filter(strings.Join(filter, " AND ")).Pages(context.Background(), recordTargetId(&lastInstanceId)); err != nil {
-					panic(err)
-				}
-			}
-			loggingService, err := logging.NewService(context.Background(), option.WithScopes(logging.LoggingReadScope))
-			if err != nil {
-				panic(err)
-			}
-			filter = []string{}
-			filter = append(filter, fmt.Sprintf("logName = \"projects/%s/logs/gat\"", project))
-			filter = append(filter, fmt.Sprintf("resource.labels.instance_id = \"%d\"", lastInstanceId))
-			filter = append(filter, fmt.Sprintf("resource.type = \"gce_instance\""))
-			freshness := c.String("freshness")
-			if len(freshness) == 0 {
-				freshness = "24h"
-			}
-			dur, err := time.ParseDuration(freshness)
-			if err != nil {
-				panic(err)
-			} else if dur > 0 {
-				dur = -dur
-			}
-			after := time.Now().Add(dur)
-			if err != nil {
-				panic(err)
-			}
-			var term bool
-			var lastInsertId string
-			for qFirst := true; ; qFirst = false {
-				if err := logging.NewEntriesService(loggingService).List(&logging.ListLogEntriesRequest{
-					Filter:        strings.Join(append(filter, fmt.Sprintf("timestamp >= \"%s\"", after.Format(time.RFC3339))), " AND "),
-					ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-				}).Pages(context.Background(), printLogEntries(qFirst, &term, &lastInsertId)); err != nil {
-					panic(err)
-				}
-				if !term && c.Bool("follow") {
-					// delay between log entry and fluentd's
-					// recording is ~5s so only looking after
-					// `after` would miss entries in last
-					// five seconds.
-					after = time.Now().Add(-time.Minute)
-					time.Sleep(1200 * time.Millisecond)
-				} else {
-					break
-				}
-			}
-			return nil
+			return logGce(c)
 		},
 	}
+}
+
+func logAws(c *cli.Context) error {
+	return errors.New("unimplemented")
+}
+
+func logGce(c *cli.Context) error {
+	computeService, err := compute.NewService(context.Background(), option.WithScopes(compute.ComputeReadonlyScope))
+	if err != nil {
+		panic(err)
+	}
+	filter := []string{}
+	filter = append(filter, fmt.Sprintf("(operationType = \"insert\")"))
+	serviceAccountBytes, _, _ := escapeCredentials(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	var serviceAccount ServiceAccount
+	json.Unmarshal(serviceAccountBytes, &serviceAccount)
+	filter = append(filter, fmt.Sprintf("(user = \"%s\")", serviceAccount.Client_email))
+	project := c.String("project")
+	zone := c.String("zone")
+	var lastInstanceId uint64
+	for follow := true; lastInstanceId == 0 && follow; follow = c.Bool("follow") {
+		if err := compute.NewZoneOperationsService(computeService).List(project, zone).Filter(strings.Join(filter, " AND ")).Pages(context.Background(), recordTargetId(&lastInstanceId)); err != nil {
+			panic(err)
+		}
+	}
+	loggingService, err := logging.NewService(context.Background(), option.WithScopes(logging.LoggingReadScope))
+	if err != nil {
+		panic(err)
+	}
+	filter = []string{}
+	filter = append(filter, fmt.Sprintf("logName = \"projects/%s/logs/gat\"", project))
+	filter = append(filter, fmt.Sprintf("resource.labels.instance_id = \"%d\"", lastInstanceId))
+	filter = append(filter, fmt.Sprintf("resource.type = \"gce_instance\""))
+	freshness := c.String("freshness")
+	if len(freshness) == 0 {
+		freshness = "24h"
+	}
+	dur, err := time.ParseDuration(freshness)
+	if err != nil {
+		panic(err)
+	} else if dur > 0 {
+		dur = -dur
+	}
+	after := time.Now().Add(dur)
+	if err != nil {
+		panic(err)
+	}
+	var term bool
+	var lastInsertId string
+	for qFirst := true; ; qFirst = false {
+		if err := logging.NewEntriesService(loggingService).List(&logging.ListLogEntriesRequest{
+			Filter:        strings.Join(append(filter, fmt.Sprintf("timestamp >= \"%s\"", after.Format(time.RFC3339))), " AND "),
+			ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
+		}).Pages(context.Background(), printLogEntries(qFirst, &term, &lastInsertId)); err != nil {
+			panic(err)
+		}
+		if !term && c.Bool("follow") {
+			// delay between log entry and fluentd's
+			// recording is ~5s so only looking after
+			// `after` would miss entries in last
+			// five seconds.
+			after = time.Now().Add(-time.Minute)
+			time.Sleep(1200 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	return nil
 }
 
 func timezoneOf(region string) string {
@@ -1470,10 +1571,9 @@ func pushAws(c *cli.Context) error {
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "build", "--dockerfile", infile}); err != nil {
 		return err
 	}
-	// getImageAws(project, constructTag(c))
 
 	tag := constructTag(c)
-	ensureRepoAws(awsregion, tag)
+	oldDigest, _ := getImageAws(awsregion, tag)
 
 	svc := getAwsEcr(awsregion)
 	token, err := svc.GetAuthorizationToken(&ecr.GetAuthorizationTokenInput{})
@@ -1487,21 +1587,25 @@ func pushAws(c *cli.Context) error {
 		return err
 	}
 
-	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
-	if err != nil {
-		return err
-	}
-	server := fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", *identity.Account, awsregion)
 	username, password := func() (string, string) {
 		x := strings.Split(string(passbytes), ":")
 		return x[0], x[1]
 	}()
-	target := filepath.Join(server, tag)
 	jsonBytes, _ := json.Marshal(types.AuthConfig{
 		Username: username,
 		Password: password,
 	})
-	return pushImage(target, tag, jsonBytes)
+
+	if err := pushImage(repositoryUriAws(c), tag, jsonBytes); err != nil {
+		return err
+	}
+	newDigest, _ := getImageAws(awsregion, tag)
+	if len(oldDigest) > 0 && oldDigest != newDigest {
+		if err := deleteImageAws(awsregion, tag, oldDigest); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pushGce(c *cli.Context) error {
@@ -1588,11 +1692,11 @@ func runRemoteGce(c *cli.Context) error {
 		panic(err)
 	}
 
-	bytes, newline_escaped, err := escapeCredentials()
-	user_data := UserData(c, project, constructTag(c), fmt.Sprintf("gs://%s", gatId(c, project)), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+	bytes, newline_escaped, err := escapeCredentials(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	tag := constructTag(c)
+	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), newline_escaped)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
-		tag := constructTag(c)
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
 			if len(images) == 0 {
 				panic(fmt.Sprintf("Image tagged %s not found", tag))
@@ -1606,7 +1710,7 @@ func runRemoteGce(c *cli.Context) error {
 			}
 		}
 	}
-	shutdown_script := Shutdown(c, project, constructTag(c), gatId(c, project), filepath.Base(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")), newline_escaped, "/var/tmp")
+	shutdown_script := Shutdown(c, tag)
 	var serviceAccount ServiceAccount
 	json.Unmarshal(bytes, &serviceAccount)
 	prefix := "https://www.googleapis.com/compute/v1/projects/" + project
@@ -1743,14 +1847,13 @@ func RunLocalCommand() *cli.Command {
 			config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
 			config1.SetString("gat.last_project", project)
 
-			_, newline_escaped, err := escapeCredentials()
 			var pwd string
 			if worktree != nil {
 				pwd = worktree.Path()
 			} else {
 				pwd = filepath.Dir(filepath.Clean(repo.Path()))
 			}
-			scommands := DockerCommands(c, project, constructTag(c), pwd, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), newline_escaped, filepath.Dir(filepath.Clean(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))))
+			scommands := DockerCommands(c, constructTag(c), pwd)
 
 			commands := strings.Split(scommands, "\n")
 			type runError struct {
@@ -1885,7 +1988,6 @@ func buildBaseImage(cli *client.Client, baseTag string, infile string) (string, 
 }
 
 func buildImage(project string, tag string, outfile string) error {
-	ensureApplicationDefaultCredentials()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
