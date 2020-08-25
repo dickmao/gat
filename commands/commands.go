@@ -858,7 +858,7 @@ func runRemoteAws(c *cli.Context) error {
 	var gpus string
 	if len(machine) == 0 {
 		machine = "t2.micro"
-	} else if ok, _ := regexp.Match(`^g`, []byte(machine)); ok {
+	} else if ok, _ := regexp.Match(`^(g|p)`, []byte(machine)); ok {
 		gpus = " --gpus all"
 	}
 
