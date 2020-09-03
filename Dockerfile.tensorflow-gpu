@@ -58,3 +58,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 USER $NB_UID
 
+RUN python -m pip install -q git+https://github.com/dickmao/Kaggler.git@gcspath

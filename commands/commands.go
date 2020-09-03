@@ -863,7 +863,7 @@ func runRemoteAws(c *cli.Context) error {
 	}
 
 	tag := constructTag(c)
-	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), gpus)
+	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), gpus, c.StringSlice("env"))
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
@@ -904,7 +904,7 @@ func runRemoteAws(c *cli.Context) error {
 				MarketType:  aws.String(ec2.MarketTypeSpot),
 				SpotOptions: &ec2.SpotMarketOptions{},
 			},
-			ImageId:      aws.String("ami-08f0ed8a0f25cb70c"),
+			ImageId:      aws.String("ami-08f0ed8a0f25cb70c"), // packer.json
 			InstanceType: aws.String(machine),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
@@ -2504,6 +2504,10 @@ func runRemoteFlags() []cli.Flag {
 			Name:  "region",
 			Usage: "AWS or GCE region, e.g., us-east-2, us-central1",
 		},
+		&cli.StringSliceFlag{
+			Name:  "env",
+			Usage: "Environment variables, e.g., KAGGLE_USERNAME=kaggler",
+		},
 	}
 }
 
@@ -2516,6 +2520,10 @@ func runLocalFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
+		},
+		&cli.StringSliceFlag{
+			Name:  "env",
+			Usage: "Environment variables, e.g., KAGGLE_USERNAME=kaggler",
 		},
 	}
 }

@@ -95,6 +95,8 @@ need for template at all?
   gat has to do this, not elisp
 
 ** Datasets
+PROBLEM: bunch of little files.  If you are reading or writing one small file at a time, this may cause you to achieve a low throughput to or from GCS. If you want high throughput, you will need to either use larger files to smooth across latency hiccups or read/write multiple files at a time.
+
 user's responsibility to gcsfuse in Dockerfile
 otherwise too hard to dovetail local to remote testing
 API request a new iamcredentials key impossible gcp console, and toolbox pull to get gcloud is a bear.  So copying credentials via user-data.
@@ -324,12 +326,56 @@ Premise was user could have any *debian* base image he pleases, and I'd fill in 
 
 ein:gat-base-images would need bespoke image off of Dockerfile.tensorflow-gpu.template.  okay then bespeak it.
 
-opensciencegrid/tensorflow-gpu assumes nvidia/cuda and recreates jupyter stuff (where as Dockerfile.tenosrflow-gpu.template assumes jupyter and recreates nvidia/cuda).
+docker build -t dickmao/gat:latest - < Dockerfile.tensorflow-gpu
+
+opensciencegrid/tensorflow-gpu assumes nvidia/cuda and recreates jupyter stuff (whereas Dockerfile.tensorflow-gpu.template assumes jupyter and recreates nvidia/cuda).
 
 ~"bash -c 'docker build -t nvidia/cuda:gat - < <(cat <<EOF\nFROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04\nRUN set -xe && apt-get -yq update && DEBIAN_FRONTEND=noninteractive apt-get -yq install python3 ipython3 python3-pip vim && python3 -m pip install --upgrade pip && python3 -m pip install tensorflow matplotlib\nEOF\n)'"~
 
 just show me the goods:
 cat eager.nbconvert.ipynb | jq '..|.text?'
+
+** kaggle p100
+
+kaggle notebooks use p100 which is 2x faster than k80 (p2.xlarge).
+t4 seems same class as k80.
+p100 only avails on gce.
+TIL google bought kaggle in 2017.  Ergo the free tpu, free p100 (not available for aws), menu button to ai cloud, kaggle datasets on gcs (and not s3).  AI Platform has a Kaggle Notebooks [BETA] environment option under "Notebooks -> New Instance".
+
+trying v100 on aws.
+
+** security boxout
+easy for gce instances to mount gcs but aws requires explicit credentials
+
+COPY --chown=jovyan:users ./dot.kaggle ./.kaggle
+ENV GOOGLE_APPLICATION_CREDENTIALS=/home/jovyan/credentials
+COPY --chown=jovyan:users gat-service-account.json /home/jovyan/credentials
+
+gcsfuse in fusermount.sh insists on credentials:
+https://github.com/GoogleCloudPlatform/gcsfuse/blob/fc6adff3cd1369c15665c31f010b798bc39806c3/main.go#L190-L202
+gcsfuse http GET to https://www.googleapis.com/storage/v1/b/[path]/o with transport object rendering Bearer Token.
+
+but public buckets don't require credentials (comment out gs_service_key_file in ~/.boto)
+gsutil rsync -d -r gs://kds-d60b31dadddb121deb668c0bf57af74d49b9c1e96581abe3fbfc4190 my-data
+gsutil queries storage.googleapis.com via gcs_json_api.py (apitools_client.StorageV1)
+if isinstance(self.credentials, NoOpCredentials):
+  # This API key is not secret and is used to identify gsutil during
+  # anonymous requests.
+  self.api_client.AddGlobalParam('key',
+                                 'AIzaSyDnacJHrKma0048b13sh8cgxNUwulubmJM')
+
+
+to get kds-d60b... I need to execute a jury-rigged kaggle kernel in gcspath.sh
+so I do need kaggle creds.
+
+gat will copy .ServiceAccountJsonContent to the machine instance, but obviously don't do that for kaggle.json.
+
+docker run -e KAGGLE_USERNAME and KAGGLE_KEY {{ .Tag }} to gcspath.sh
+GOT IT: gat1 append arbitrary `--env` to docker run call.
+
+** spot recovery
+
+i'm afraid gonna burn three hours, and lose it all
 
 ** gsutil s3
 

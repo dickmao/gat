@@ -4,6 +4,8 @@ import (
 	"bytes"
 	b64 "encoding/base64"
 	"fmt"
+	"os"
+	"regexp"
 	"text/template"
 
 	"github.com/urfave/cli/v2"
@@ -16,6 +18,7 @@ type CloudConfig struct {
 	ServiceAccountJsonContent string
 	ServiceAccountEnv         string
 	Workdir                   string
+	Envs                      []string
 	Gpus                      string
 	Gat0, Gat1                []string
 }
@@ -35,7 +38,7 @@ var (
 	}
 	// docker commit -c "ENTRYPOINT []" does not clear entrypoint.  Use build.
 	gat1 = []string{
-		`/bin/bash -c "docker run{{ .Gpus }} --env {{ .ServiceAccountEnv }}=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/credentials --privileged --name gat-run-container gat-sentinel"`,
+		`/bin/bash -c "docker run{{ .Gpus }}{{ range .Envs }}{{ . | printf " --env %s" }}{{ end }} --env {{ .ServiceAccountEnv }}=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/credentials --privileged --name gat-run-container gat-sentinel"`,
 		`/usr/bin/docker commit gat-run-container gat-run`,
 		`/usr/bin/docker rm gat-run-container`,
 		`/usr/bin/docker rmi gat-sentinel`,
@@ -219,7 +222,7 @@ func DockerCommands(c *cli.Context, tag string, bucket string) string {
 	return commands
 }
 
-func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, gpus string) string {
+func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, gpus string, envs []string) string {
 	runcmd := []string{"daemon-reload", "start aws-gat0.service", "start aws-gat1.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start aws-shutdown.service")
@@ -228,6 +231,13 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 	userdata += "runcmd:\n"
 	for _, value := range runcmd {
 		userdata += fmt.Sprintf("- systemctl %s\n", value)
+	}
+
+	for i, env := range envs {
+		valued, _ := regexp.Match(`=`, []byte(env))
+		if !valued {
+			envs[i] = fmt.Sprintf("%s=%s", env, os.Getenv(env))
+		}
 	}
 	// double evaluation: could not get template {{block}} {{end}} to work.
 	for i := 0; i < 2; i++ {
@@ -238,6 +248,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 			RepositoryUri:     repositoryUri,
 			Bucket:            bucket,
 			ServiceAccountEnv: "AWS_SHARED_CREDENTIALS_FILE",
+			Envs:              envs,
 			Workdir:           "/home/ec2-user",
 			Gpus:              gpus,
 			Gat0:              gat0,
