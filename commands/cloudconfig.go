@@ -19,7 +19,7 @@ type CloudConfig struct {
 	Envs                      []string
 	User                      string
 	Gpus                      string
-	Gat0, Gat1                []string
+	Gat0, Gat1, Gat2          []string
 }
 
 var (
@@ -47,6 +47,9 @@ var (
 		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; function gsutil { docker run --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; function gsutil_cp { if [ -d {{ .Bucket }} ]; then cp $1 $2 ; else docker run -v $(dirname $1):/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT cp /hostpwd/\\$(basename $1) $2\" ; fi ; } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-cache-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-cache-container) ; do if ! gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \" ; then RAND=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 7 ; echo ''); docker cp gat-cache-container:$cache - > /var/tmp/$RAND.tar ; echo \"$cache $RAND.tar\" >> /var/tmp/manifest.$KEY ; for f in $RAND.tar manifest.$KEY ; do gsutil_cp /var/tmp/$f {{ .Bucket }}/run-caches/$f ; done ; rm -f /var/tmp/$RAND.tar; fi ; done ; rm -f /var/tmp/manifest.$KEY ;"`,
 		`/usr/bin/docker rm gat-cache-container`,
 		`/usr/bin/docker rmi gat-run`,
+	}
+	gat2 = []string{
+		`bash -c "journalctl -b -o cat --no-pager -u gat2 > {{ .Bucket }}/gat.$(date +%s)"`,
 	}
 )
 
@@ -98,12 +101,27 @@ write_files:
     Type=oneshot
 {{ range .Gat1 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
 
+- path: /etc/systemd/system/gat2.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Dump gat1 output to bucket
+    After=gat1.service
+
+    [Service]
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
+    Type=oneshot
+{{ range .Gat2 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
+
 - path: /etc/systemd/system/shutdown.service
   permissions: 0644
   owner: root
   content: |
     [Unit]
     Description=Shutdown
+    After=gat2.service
 
     [Service]
     Environment="HOME={{ .Workdir }}"
@@ -185,13 +203,27 @@ write_files:
     Type=oneshot
 {{ range .Gat1 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
 
+- path: /etc/systemd/system/gat2.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Dump gat1 output to bucket
+    After=gat1.service
+
+    [Service]
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
+    Type=oneshot
+{{ range .Gat2 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
+
 - path: /etc/systemd/system/shutdown.service
   permissions: 0644
   owner: root
   content: |
     [Unit]
     Description=Shutdown
-    After=gat1.service
+    After=gat2.service
 
     [Service]
     Environment="HOME={{ .Workdir }}"
@@ -207,6 +239,7 @@ func DockerCommands(c *cli.Context, tag string, bucket string, envs []string) st
 	commands := `
 {{ range .Gat0 }}{{ . | printf "%s\n" }}{{ end }}
 {{ range .Gat1 }}{{ . | printf "%s\n" }}{{ end }}
+{{ range .Gat2 }}{{ . | printf "%s\n" }}{{ end }}
 `
 	for i := 0; i < 2; i++ {
 		t := template.Must(template.New("CloudConfig").Parse(commands))
@@ -221,6 +254,7 @@ func DockerCommands(c *cli.Context, tag string, bucket string, envs []string) st
 			Gpus:                      "",
 			Gat0:                      gat0,
 			Gat1:                      gat1,
+			Gat2:                      gat2,
 		}); err != nil {
 			panic(err)
 		}
@@ -230,7 +264,7 @@ func DockerCommands(c *cli.Context, tag string, bucket string, envs []string) st
 }
 
 func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, gpus string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start gat0.service", "start gat1.service"}
+	runcmd := []string{"daemon-reload", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}
@@ -254,6 +288,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 			Gpus:              gpus,
 			Gat0:              gat0,
 			Gat1:              gat1,
+			Gat2:              gat2,
 		}); err != nil {
 			panic(err)
 		}
@@ -263,7 +298,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 }
 
 func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, serviceAccountJsonContent string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start cos-gpu-installer.service", "start cuda-vector-add.service", "start stackdriver-logging", "start gat0.service", "start gat1.service"}
+	runcmd := []string{"daemon-reload", "start cos-gpu-installer.service", "start cuda-vector-add.service", "start stackdriver-logging", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}
@@ -287,6 +322,7 @@ func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string
 			Workdir:                   "/var/tmp",
 			Gat0:                      gat0,
 			Gat1:                      gat1,
+			Gat2:                      gat2,
 		}); err != nil {
 			panic(err)
 		}
