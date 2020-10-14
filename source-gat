@@ -38,7 +38,6 @@ function gat() {
   local project
   local zone
   local region
-  local awsregion
   args=()
   commands=("master" "version" "create" "test" "log" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
   while [[ $# -gt -0 ]] ; do
@@ -65,13 +64,19 @@ function gat() {
 	      ;;
       esac
   done
-  awsregion=$(aws configure get region || true);
-  zone=${zone:-$(gcloud config get-value compute/zone)}
-  if [ -z $zone ]; then return -1; fi
-  region=${region:-$(gcloud config get-value compute/region)}
+  zone="-"
+  project="-"
+  region=${region:-$(gcloud config get-value compute/region 2>/dev/null)}
+  if [ ! -z $region ] && [[ ! $region =~ -[0-9]$ ]]; then
+      # gce
+      zone=${zone:-$(gcloud config get-value compute/zone)}
+      if [ -z $zone ]; then return -1; fi
+      project=${project:-$(gcloud config get-value core/project)}
+      if [ -z $project ]; then return -1; fi
+  elif [ -z $region ]; then
+      region=$(aws configure get region 2>/dev/null);
+  fi
   if [ -z $region ]; then return -1; fi
-  project=${project:-$(gcloud config get-value core/project)}
-  if [ -z $project ]; then return -1; fi
   cmd=""
   if [ "${#args[@]}" -eq 1 ] && [[ ! " ${commands[@]} " =~ " ${args[0]} " ]]; then
       cmd="edit"
@@ -81,7 +86,6 @@ function gat() {
   fi
   if [ ! -z $cmd ]; then
       args=(--project $project --zone $zone --region $region $cmd "${args[@]}")
-      if [ ! -z $awsregion ]; then args=(--awsregion $awsregion "${args[@]}"); fi
       output=$(GOOGLE_APPLICATION_CREDENTIALS=${GAT_APPLICATION_CREDENTIALS} $GOPATH/bin/gat "${args[@]}")
       if [ $? = 7 ]; then
         eval "$output"
@@ -91,7 +95,6 @@ function gat() {
       fi
   else
       args=(--project $project --zone $zone --region $region "${args[@]}")
-      if [ ! -z $awsregion ]; then args=(--awsregion $awsregion "${args[@]}"); fi
       GOOGLE_APPLICATION_CREDENTIALS=${GAT_APPLICATION_CREDENTIALS} $GOPATH/bin/gat "${args[@]}"
   fi
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -178,33 +179,33 @@ func ensureBucketGce(c *cli.Context) error {
 	return nil
 }
 
-func ensureBucketAws(c *cli.Context, awsregion string, bucket string) error {
-	result, err := getAwsS3(awsregion).ListBuckets(&s3.ListBucketsInput{})
+func ensureBucketAws(c *cli.Context, region string, bucket string) error {
+	result, err := getAwsS3(region).ListBuckets(&s3.ListBucketsInput{})
 	for _, v := range result.Buckets {
 		if *v.Name == bucket {
 			return nil
 		}
 	}
-	_, err = getAwsS3(awsregion).CreateBucket(&s3.CreateBucketInput{
+	_, err = getAwsS3(region).CreateBucket(&s3.CreateBucketInput{
 		Bucket: aws.String(bucket),
 		CreateBucketConfiguration: &s3.CreateBucketConfiguration{
-			LocationConstraint: aws.String(awsregion),
+			LocationConstraint: aws.String(region),
 		},
 	})
 	return err
 }
 
-func getBucketNameAws(c *cli.Context, awsregion string) string {
-	identity, err := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
+func getBucketNameAws(c *cli.Context, region string) string {
+	identity, err := getAwsSts(region).GetCallerIdentity(&sts.GetCallerIdentityInput{})
 	if err != nil {
 		panic(err)
 	}
 	return gatId(c, *identity.Account)
 }
 
-func mountBucketAws(c *cli.Context, awsregion string, pwd string) error {
-	bucket := getBucketNameAws(c, awsregion)
-	if err := ensureBucketAws(c, awsregion, bucket); err != nil {
+func mountBucketAws(c *cli.Context, region string, pwd string) error {
+	bucket := getBucketNameAws(c, region)
+	if err := ensureBucketAws(c, region, bucket); err != nil {
 		return err
 	}
 	mountpoint := filepath.Join(pwd, "run-remote")
@@ -243,9 +244,9 @@ func mountBucketAws(c *cli.Context, awsregion string, pwd string) error {
 			"s3fs",
 			mountpoint,
 			"-o",
-			fmt.Sprintf("url=https://s3.%s.amazonaws.com", awsregion),
+			fmt.Sprintf("url=https://s3.%s.amazonaws.com", region),
 			"-o",
-			fmt.Sprintf("bucket=%s:/run-local", bucket),
+			fmt.Sprintf("bucket=%s", bucket),
 			"-o",
 			fmt.Sprintf("uid=%s", current.Uid),
 			"-o",
@@ -288,7 +289,7 @@ func mountBucketGce(c *cli.Context, pwd string) error {
 		if err := os.MkdirAll(mountpoint, 0755); err != nil {
 			panic(err)
 		}
-		cmd := exec.Command("gcsfuse", "--implicit-dirs", "--file-mode", "444", "--only-dir", "run-local", bucket, mountpoint)
+		cmd := exec.Command("gcsfuse", "--implicit-dirs", "--file-mode", "444", bucket, mountpoint)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			panic(runError{err, output})
 		}
@@ -328,18 +329,18 @@ func getClientStorage() *storage.Client {
 	return storageClient
 }
 
-func getAwsS3(awsregion string) *s3.S3 {
+func getAwsS3(region string) *s3.S3 {
 	awsS3Once.Do(func() {
-		awsS3 = s3.New(getAwsSession(awsregion))
+		awsS3 = s3.New(getAwsSession(region))
 	})
 	return awsS3
 }
 
-func getAwsSession(awsregion string) *session.Session {
+func getAwsSession(region string) *session.Session {
 	awsSessionOnce.Do(func() {
 		awsSession = session.Must(session.NewSessionWithOptions(session.Options{
 			Config: aws.Config{
-				Region: aws.String(awsregion),
+				Region: aws.String(region),
 			},
 			SharedConfigState: session.SharedConfigEnable,
 		}))
@@ -347,16 +348,16 @@ func getAwsSession(awsregion string) *session.Session {
 	return awsSession
 }
 
-func getAwsSts(awsregion string) *sts.STS {
+func getAwsSts(region string) *sts.STS {
 	awsStsOnce.Do(func() {
-		awsSts = sts.New(getAwsSession(awsregion))
+		awsSts = sts.New(getAwsSession(region))
 	})
 	return awsSts
 }
 
-func getAwsEcr(awsregion string) *ecr.ECR {
+func getAwsEcr(region string) *ecr.ECR {
 	awsEcrOnce.Do(func() {
-		awsEcr = ecr.New(getAwsSession(awsregion))
+		awsEcr = ecr.New(getAwsSession(region))
 	})
 	return awsEcr
 }
@@ -527,12 +528,12 @@ func descriptorFromResponse(response *http.Response) (distribution.Descriptor, e
 	return desc, nil
 }
 
-func ensureRepoAws(awsregion string, tag string) {
+func ensureRepoAws(region string, tag string) {
 	ecrRepoName, _ := func() (string, string) {
 		x := strings.Split(tag, ":")
 		return x[0], x[1]
 	}()
-	svc := getAwsEcr(awsregion)
+	svc := getAwsEcr(region)
 	if _, err := svc.DescribeRepositories(&ecr.DescribeRepositoriesInput{
 		RepositoryNames: []*string{
 			aws.String(ecrRepoName),
@@ -552,13 +553,13 @@ func ensureRepoAws(awsregion string, tag string) {
 	}
 }
 
-func getImageAws(awsregion string, tag string) (string, error) {
-	ensureRepoAws(awsregion, tag)
+func getImageAws(region string, tag string) (string, error) {
+	ensureRepoAws(region, tag)
 	ecrRepoName, ecrRepoTag := func() (string, string) {
 		x := strings.Split(tag, ":")
 		return x[0], x[1]
 	}()
-	svc := getAwsEcr(awsregion)
+	svc := getAwsEcr(region)
 	if extant, err := svc.BatchGetImage(&ecr.BatchGetImageInput{
 		ImageIds: []*ecr.ImageIdentifier{
 			{
@@ -594,12 +595,12 @@ func deleteImageGce(project string, tag string, digest v1.Hash) error {
 	return nil
 }
 
-func deleteImageAws(awsregion string, tag string, digest string) error {
+func deleteImageAws(region string, tag string, digest string) error {
 	ecrRepoName, _ := func() (string, string) {
 		x := strings.Split(tag, ":")
 		return x[0], x[1]
 	}()
-	svc := getAwsEcr(awsregion)
+	svc := getAwsEcr(region)
 	if result, err := svc.BatchDeleteImage(&ecr.BatchDeleteImageInput{
 		ImageIds: []*ecr.ImageIdentifier{
 			{
@@ -641,6 +642,16 @@ func escapeCredentials(filename string) ([]byte, string, error) {
 	modifier_escaped := strings.Replace(quoted_escaped[1:len(quoted_escaped)-1], "%", "%%", -1)
 	newline_escaped := strings.Replace(modifier_escaped, "\\\\n", "\\\\\\\\n", -1)
 	return bytes, newline_escaped, nil
+}
+
+func processEnvs(envs []string) []string {
+	for i, env := range envs {
+		valued, _ := regexp.Match(`=`, []byte(env))
+		if !valued {
+			envs[i] = fmt.Sprintf("%s=%s", env, os.Getenv(env))
+		}
+	}
+	return envs
 }
 
 func printLogEntries(qFirst bool, term *bool, lastInsertId *string) func(r *logging.ListLogEntriesResponse) error {
@@ -711,7 +722,7 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 				}); err != nil {
 					return nil, err
 				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
-					PolicyArn: aws.String("arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"),
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/AmazonEC2FullAccess"),
 					RoleName:  aws.String(instanceProfileRoleName),
 				}); err != nil {
 					svcIam.DeleteRole(&iam.DeleteRoleInput{
@@ -728,6 +739,14 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 					return nil, err
 				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
 					PolicyArn: aws.String("arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/AmazonElasticFileSystemFullAccess"),
 					RoleName:  aws.String(instanceProfileRoleName),
 				}); err != nil {
 					svcIam.DeleteRole(&iam.DeleteRoleInput{
@@ -785,6 +804,71 @@ func TestCommand() *cli.Command {
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
+			region := c.String("region")
+			sess, err := session.NewSessionWithOptions(session.Options{
+				Config: aws.Config{
+					Region: aws.String(region),
+				},
+				SharedConfigState: session.SharedConfigEnable,
+			})
+			svc := ec2.New(sess)
+			azs, err := svc.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{
+				Filters: []*ec2.Filter{
+					{
+						Name: aws.String("group-name"),
+						Values: []*string{
+							aws.String(region),
+						},
+					},
+					{
+						Name: aws.String("state"),
+						Values: []*string{
+							aws.String("available"),
+						},
+					},
+				},
+			})
+			if err != nil {
+				if aerr, ok := err.(awserr.Error); ok {
+					switch aerr.Code() {
+					default:
+						fmt.Println(aerr.Error())
+					}
+				} else {
+					fmt.Println(err.Error())
+				}
+				return nil
+			}
+			for _, op := range azs.AvailabilityZones {
+				fmt.Println(*op.ZoneName)
+			}
+
+			rand.Seed(time.Now().UnixNano())
+			for i, retries := 0, 5; i < retries+1; i++ {
+				if i >= retries {
+					panic("Retries exceeded")
+				}
+
+				_, resp := svc.CreateVolumeRequest(&ec2.CreateVolumeInput{
+					AvailabilityZone: azs.AvailabilityZones[rand.Intn(len(azs.AvailabilityZones))].ZoneName,
+					DryRun:           aws.Bool(true),
+					Size:             aws.Int64(1),
+				})
+				if resp != nil {
+					if reqErr, ok := err.(awserr.RequestFailure); ok {
+						if reqErr.StatusCode() == 400 {
+							awsErr, _ := err.(awserr.Error)
+							fmt.Println("Waiting... ", awsErr.Message())
+							time.Sleep(3000 * time.Millisecond)
+							continue
+						}
+						panic(reqErr)
+					}
+					panic(err)
+				} else {
+					break
+				}
+			}
 			return nil
 		},
 	}
@@ -800,7 +884,7 @@ func RunRemoteCommand() *cli.Command {
 		Name:  "run-remote",
 		Flags: runRemoteFlags(),
 		Action: func(c *cli.Context) error {
-			if isAwsRegion(c.String("awsregion")) {
+			if isAwsRegion(c.String("region")) {
 				return runRemoteAws(c)
 			}
 			return runRemoteGce(c)
@@ -815,10 +899,10 @@ func repositoryUriGce(c *cli.Context) string {
 }
 
 func repositoryUriAws(c *cli.Context) string {
-	awsregion := c.String("awsregion")
+	region := c.String("region")
 	tag := constructTag(c)
-	identity, _ := getAwsSts(awsregion).GetCallerIdentity(&sts.GetCallerIdentityInput{})
-	server := fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", *identity.Account, awsregion)
+	identity, _ := getAwsSts(region).GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	server := fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", *identity.Account, region)
 	return filepath.Join(server, tag)
 }
 
@@ -830,10 +914,9 @@ func runRemoteAws(c *cli.Context) error {
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
-	awsregion := c.String("awsregion")
 	infile := inputDockerfile(c)
 	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "push", "--dockerfile", infile}); err != nil {
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
 		panic(err)
 	}
 	config1, err := repo1.Config()
@@ -850,7 +933,7 @@ func runRemoteAws(c *cli.Context) error {
 	} else {
 		pwd = filepath.Dir(filepath.Clean(repo.Path()))
 	}
-	if err := mountBucketAws(c, awsregion, pwd); err != nil {
+	if err := mountBucketAws(c, region, pwd); err != nil {
 		panic(err)
 	}
 
@@ -862,8 +945,9 @@ func runRemoteAws(c *cli.Context) error {
 		gpus = " --gpus all"
 	}
 
+	envs := processEnvs(c.StringSlice("env"))
 	tag := constructTag(c)
-	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, awsregion)), gpus, c.StringSlice("env"))
+	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, region)), gpus, envs)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
@@ -881,7 +965,7 @@ func runRemoteAws(c *cli.Context) error {
 	}
 	sess, err := session.NewSessionWithOptions(session.Options{
 		Config: aws.Config{
-			Region: aws.String(awsregion),
+			Region: aws.String(region),
 		},
 		SharedConfigState: session.SharedConfigEnable,
 	})
@@ -964,7 +1048,7 @@ func LogCommand() *cli.Command {
 		Name:  "log",
 		Flags: logFlags(),
 		Action: func(c *cli.Context) error {
-			if isAwsRegion(c.String("awsregion")) {
+			if isAwsRegion(c.String("region")) {
 				return logAws(c)
 			}
 			return logGce(c)
@@ -1445,15 +1529,7 @@ func DockerfileCommand() *cli.Command {
 func inputDockerfile(c *cli.Context) string {
 	result := c.String("dockerfile")
 	if len(result) == 0 {
-		repo := c.Context.Value(repoKey).(*git.Repository)
-		worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-		var pwd string
-		if worktree != nil {
-			pwd = worktree.Path()
-		} else {
-			pwd = filepath.Dir(filepath.Clean(repo.Path()))
-		}
-
+		pwd, _ := os.Getwd()
 		globs, err := filepath.Glob(filepath.Join(pwd, "Dockerfile*"))
 		if err != nil {
 			panic(err)
@@ -1508,17 +1584,16 @@ func pushAws(c *cli.Context) error {
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
-	awsregion := c.String("awsregion")
 	infile := inputDockerfile(c)
 	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "--awsregion", awsregion, "build", "--dockerfile", infile}); err != nil {
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
 		return err
 	}
 
 	tag := constructTag(c)
-	oldDigest, _ := getImageAws(awsregion, tag)
+	oldDigest, _ := getImageAws(region, tag)
 
-	svc := getAwsEcr(awsregion)
+	svc := getAwsEcr(region)
 	token, err := svc.GetAuthorizationToken(&ecr.GetAuthorizationTokenInput{})
 	if err != nil {
 		return err
@@ -1542,9 +1617,9 @@ func pushAws(c *cli.Context) error {
 	if err := pushImage(repositoryUriAws(c), tag, jsonBytes); err != nil {
 		return err
 	}
-	newDigest, _ := getImageAws(awsregion, tag)
+	newDigest, _ := getImageAws(region, tag)
 	if len(oldDigest) > 0 && oldDigest != newDigest {
-		if err := deleteImageAws(awsregion, tag, oldDigest); err != nil {
+		if err := deleteImageAws(region, tag, oldDigest); err != nil {
 			return err
 		}
 	}
@@ -1597,7 +1672,7 @@ func PushCommand() *cli.Command {
 		Name:  "push",
 		Flags: pushFlags(),
 		Action: func(c *cli.Context) error {
-			if isAwsRegion(c.String("awsregion")) {
+			if isAwsRegion(c.String("region")) {
 				return pushAws(c)
 			}
 			return pushGce(c)
@@ -1635,9 +1710,10 @@ func runRemoteGce(c *cli.Context) error {
 		panic(err)
 	}
 
+	envs := processEnvs(c.StringSlice("env"))
 	bytes, newline_escaped, err := escapeCredentials(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 	tag := constructTag(c)
-	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), newline_escaped)
+	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), newline_escaped, envs)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
@@ -1796,8 +1872,9 @@ func RunLocalCommand() *cli.Command {
 			} else {
 				pwd = filepath.Dir(filepath.Clean(repo.Path()))
 			}
-			scommands := DockerCommands(c, constructTag(c), pwd)
 
+			envs := processEnvs(c.StringSlice("env"))
+			scommands := DockerCommands(c, constructTag(c), pwd, envs)
 			commands := strings.Split(scommands, "\n")
 			type runError struct {
 				error
@@ -2501,12 +2578,12 @@ func runRemoteFlags() []cli.Flag {
 			Usage: "Machine type",
 		},
 		&cli.StringFlag{
-			Name:  "region",
-			Usage: "AWS or GCE region, e.g., us-east-2, us-central1",
+			Name:  "user",
+			Usage: "Docker command line option --user",
 		},
 		&cli.StringSliceFlag{
 			Name:  "env",
-			Usage: "Environment variables, e.g., KAGGLE_USERNAME=kaggler",
+			Usage: "Docker command line option --env, e.g., KAGGLE_USERNAME=kaggler",
 		},
 	}
 }
@@ -2521,9 +2598,13 @@ func runLocalFlags() []cli.Flag {
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
 		},
+		&cli.StringFlag{
+			Name:  "user",
+			Usage: "Docker command line option --user",
+		},
 		&cli.StringSliceFlag{
 			Name:  "env",
-			Usage: "Environment variables, e.g., KAGGLE_USERNAME=kaggler",
+			Usage: "Docker command line option --env, e.g., KAGGLE_USERNAME=kaggler",
 		},
 	}
 }

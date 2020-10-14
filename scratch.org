@@ -326,7 +326,7 @@ Premise was user could have any *debian* base image he pleases, and I'd fill in 
 
 ein:gat-base-images would need bespoke image off of Dockerfile.tensorflow-gpu.template.  okay then bespeak it.
 
-docker build -t dickmao/gat:latest - < Dockerfile.tensorflow-gpu
+docker build -t dickmao/tensorflow-gpu:latest - < Dockerfile.tensorflow-gpu
 
 opensciencegrid/tensorflow-gpu assumes nvidia/cuda and recreates jupyter stuff (whereas Dockerfile.tensorflow-gpu.template assumes jupyter and recreates nvidia/cuda).
 
@@ -372,6 +372,65 @@ gat will copy .ServiceAccountJsonContent to the machine instance, but obviously 
 
 docker run -e KAGGLE_USERNAME and KAGGLE_KEY {{ .Tag }} to gcspath.sh
 GOT IT: gat1 append arbitrary `--env` to docker run call.
+
+dick@dick:~/kaggle-api/pytorch-baseline-train$ gat --region us-east-2 run-remote --user root --noshutdown --machine p2.xlarge --env KAGGLE_USERNAME=$(cat ~/.kaggle/kaggle.json | jq -r '.username') --env KAGGLE_KEY=$(cat ~/.kaggle/kaggle.json | jq -r '.key') --env GRANT_SUDO=1 --dockerfile Dockerfile.xvdf
+
+once ssh'ed to instance
+docker commit carcass foo:bar
+docker run --rm -ti --gpus all --env AWS_SHARED_CREDENTIALS_FILE=$(docker inspect -f '{{json .Config.WorkingDir}}' foo:bar | sed 's/\"//g')/credentials --privileged --device=/dev/sdf:/dev/xvdf --name foobar --env GRANT_SUDO=1 --user root --entrypoint bash foo:bar -i
+
+** cannot mount dataset outside az
+
+aws ec2 describe-snapshots --owner-ids self --query "Snapshots[?(StartTime>='2020-03-31')]|[?starts_with(Description,'Created by CreateImage(i-0b9')]"
+
+** gcsfuse latency and how does kaggle handle it?
+
+`df ../input/lyft-motion-prediction-autonomous-vehicles` yields
+192.168.0.42:/data/kagglesdsdata/competitions/19990/1472735/c55cjwfzx05z
+so nfs with da goods.
+
+does this happen with "upgrade to google cloud AI notebooks"?  No.  Even hackier with a special prefatory cell # IMPORTANT: RUN THIS CELL IN ORDER TO IMPORT YOUR KAGGLE DATASETS # TO THE CORRECT LOCATION (/kaggle/input) IN YOUR NOTEBOOK, # THEN FEEL FREE TO DELETE CELL.
+
+shit is on "lyft-motion-prediction-autonomous-vehicles:https://storage.googleapis.com/kaggle-competitions-data/kaggle-v2%2F19990%2F1472735%2Fbundle%2Farchive.zip , which gets curled and unzipped to local disk of VM instance.  Bullhonky!  The lyft set is massive, the download takes forever, and time penalty is repaid every instance restart?  Wtf.
+
+It seems Google does not fusermount the datasets.
+
+** cromwell?
+
+seems to read directly off gcs
+
+** files possible solution
+
+user contributions are KagglerDatasets().get_gcs_path read off gcs
+official datasets are in /kaggle/input which is nfs'ed.
+
+tf.io.gfile direct from a gs url.
+hypothesis: you can't interface `inputs` as a filesystem except via nfs
+therefore: you need to replicate tf's pywrap mechanism
+
+but tf's pywrap requires writing tfrecords, which people won't do, especially for the fragmented zarr stuff.  what if we can get gcsfuse to perform (i.e., achieve the dream).
+
+go run gcsfuse/benchmarks/read_within_file/main.go --file /var/tmp/lyft-motion-prediction-autonomous-vehicles/multi_mode_sample_submission.csv
+reads at 100Mb/s, the speed of my internet
+
+https://github.com/GoogleCloudPlatform/gcsfuse/issues/234
+./gcsfuse --foreground --debug_fuse --debug_gcs  --implicit-dirs --temp-dir /var/tmp $(bash /home/dick/Kaggler/kaggler/gcspath/gcspath.sh -c lyft-motion-prediction-autonomous-vehicles
+) /var/tmp/lyft-motion-prediction-autonomous-vehicles | tee /tmp/bagel
+a StatObject can be 50-100ms.  For 16k entries like agent, that'd be 800 to 1600 seconds, way too long just for a stat, never mind reading the data.
+
+instantiate container image and ebs snapshot in a dipole that gets created and destroyed together.  or download it the first time, then restore from gcs cache (via LABEL mechanism).  nix the latter as something user would never do.
+
+from kaggler.gcspath import gcspath, volume
+efs_populate('/var/tmp/bucket', competition='siim-isic-melanoma-classification', expire=2d)
+efs_populate('/var/tmp/bucket', dataset='cdeotte/jpeg-isic2019-256x256', expire=2d)
+
+auto-expire could be an aws lambda that deletes itself.
+
+gcspath.ebs_volume creates a suitably sized volume, now whoever running function needs to populate it.  If aws instance, great, just mount volume, and call gslib.__main__.main() with `gsutil rsync`.  If local instance, I can't mount volume (so be it).
+
+*Multi-Attach is available only in the us-east-1, us-west-2, eu-west-1, and ap-northeast-2 Regions.*  efs is obviously the answer.
+
+hmm.. packer, in order to prepopulate an ebs volume, seems to assume a shell command mkfs in the provisioners clause
 
 ** spot recovery
 

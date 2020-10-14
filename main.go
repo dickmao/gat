@@ -87,24 +87,19 @@ func newApp() *cli.App {
 			Name:     "project",
 			Required: true,
 			Aliases:  []string{"p"},
-			Usage:    "gcp project",
+			Usage:    "GCE project",
 		},
 		&cli.StringFlag{
 			Name:     "zone",
 			Required: true,
 			Aliases:  []string{"z"},
-			Usage:    "gcp zone",
+			Usage:    "GCE zone",
 		},
 		&cli.StringFlag{
 			Name:     "region",
 			Required: true,
 			Aliases:  []string{"r"},
-			Usage:    "gce region",
-		},
-		&cli.StringFlag{
-			Name:     "awsregion",
-			Required: false,
-			Usage:    "aws region",
+			Usage:    "AWS or GCE region, e.g., us-east-2, us-central1",
 		},
 	}
 	app.Commands = []*cli.Command{
