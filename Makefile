@@ -18,7 +18,7 @@ compile: version/version.go
 	go build
 
 $(LIBDIR)/libgit2.so:
-	$(eval LIBGIT2_DOWNLOAD:=$(shell curl -sSL https://api.github.com/repos/libgit2/libgit2/releases/latest | grep 'browser_download_url.*tar.gz"' | cut -d : -f 2,3 | tr -d \"))
+	$(eval LIBGIT2_DOWNLOAD:=$(shell curl -sSL https://api.github.com/repos/libgit2/libgit2/releases/27211993 | grep 'browser_download_url.*tar.gz"' | cut -d : -f 2,3 | tr -d \"))
 	$(eval LIBGIT2_SLUG:=$(subst .tar.gz,,$(shell basename $(LIBGIT2_DOWNLOAD))))
 	curl -sSL $(LIBGIT2_DOWNLOAD) | tar xzf -
 	mkdir -p $(LIBGIT2_SLUG)/build
