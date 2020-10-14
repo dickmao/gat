@@ -4,3 +4,4 @@ sendgrid.env
 docs/build
 docs/source/conf.py
 venv
+cos_gpu_installer.go
