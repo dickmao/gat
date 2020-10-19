@@ -256,11 +256,6 @@ it's a mess.
 https://github.com/tensorflow/ecosystem/commit/2cbd6579a844cff4e8155ccfcfa80bb696e4e28c
 suggests multiworker requires kubernetes
 
-* vast.ai
-without .ServiceAccountJson won't be able to pull a private gcr.io image
-will vast.ai docker run privileged?
-i'd need to throw out all the sentinel business and gsutil caching and storing results.
-
 * aws
 ** cos?
 gcloud compute images export --destination-uri gs://artifacts.api-project-421333809285.appspot.com/my-image.tar.gz --image cos-81-12871-96-202006181203 --project api-project-421333809285 --export-format vhdx
@@ -451,7 +446,6 @@ So I *do* need to gsutil from docker ... need -net "host"?  Later: it's just wor
 *** TODO Explore https://github.com/NVIDIA/nvidia-docker/wiki/NGC
 
 
-
 ** use the full hour
 no, bro, as of 2 Oct 2017, ec2 billed by the instance-second.
 
@@ -566,6 +560,75 @@ Choice 1-3 don't protect against closing laptop!
    answer the question: should server be local or container?
    container because ipynb has to run thru nbconvert offline
    container, always container, because I have to close my laptop.
+* neuro-ai.co.uk
+you pip install the npu library, and it's all seamless (obviously very limiting).
+* vast.ai
+without .ServiceAccountJson won't be able to pull a private gcr.io image
+will vast.ai docker run privileged?
+i'd need to throw out all the sentinel business and gsutil caching and storing results.
+
 * Competition
 https://github.com/lab-ml/lab
 https://github.com/google/caliban
+* Interactive notebooks
+That it starts out command line and finishes in web is already losing to ai cloud.
+
+The pain point is you have this inconstant machine, inconstant nfs mounts, fucking having
+to efs_populate or pip install shit to get back to WYLLO (where you last left off),
+running clock, cannot access filesystem or grep shit.
+
+we live in an age where practitioners don't grep, don't pdb, just evaluate python.
+they just want to see what would happen, and they can't do it locally.
+
+user needs a "stand," a djinn that's summonable in an instant, drains your energy,
+but can be called off also in an instant.
+
+activation energy required for aws-stand too great.
+
+i'm sitting in notebook.  M-x ein:run-remote
+
+
+
+ipykernel needs to be up contiguously, must have ALWAYS ON.
+
+Pool (vast.ai?) is the answer
+
+workflow has to be local then to negate "waiting for shit."
+
+local doesn't have what it takes to replicate the real thing (nonstarter)
+
+you need real thing locally.
+
+if you do that, then value prop of cloud is *only* parallel jobs.
+
+promise of cloud is you don't need the expensive, ornery things locally.
+
+Stopping an instance is effectively a shutdown, only preserves instance-id.
+
+fundamental contradiction: you want interactive, but you also want discretized finality of batch job.
+
+* Hosting
+basic idea: people don't pay for scalable, they pay for non-scalable (uber drives).  Running and babysitting their junk is very non-scalable.  ON THE OTHER HAND, mcdonalds makes money by doing one thing and doing it well, assuming the "one thing" is separable which in the case of experiments, it's not.
+
+trade secrets and in-house libraries are a real problem.  but stripe doesn't own my credit card.  so there's a separable secret that customer plugs in, and stripe does the (substantive) rest.
+
+separable script?  well, minimally it's a directory with a Dockerfile.
+
+value prop: aws-binderize your kaggle notebook
+
+why not: a thing so deeply woven into web can't be pulled out to the command line.  stop fighting this uphill battle.  he points and clicks his inputs in kaggle.  it's too disruptive to steer him from that workflow.  aws related code (efs_populate) cannot be tested.
+
+value prop: aws-binderize cromwell
+
+why for: a thing born of the command line is less an uphill.
+
+
+
+/no good ever came of dev tools/
+
+you have to disaggregate a nondev need, like keeping a machine up, or load balancing.
+
+well, babysitting is a nondev need.
+
+i've taken huanvo's shit, and it sucks, and i run it in gat.
+/if i can replicate huanvo's shit with push of a button, that's valuable./

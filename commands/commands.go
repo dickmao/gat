@@ -992,7 +992,7 @@ func runRemoteAws(c *cli.Context) error {
 			InstanceType: aws.String(machine),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
-			KeyName:      aws.String("dick"),
+			KeyName:      aws.String("dick"), // FIXME
 			UserData:     &user_data,
 			BlockDeviceMappings: []*ec2.BlockDeviceMapping{
 				{
