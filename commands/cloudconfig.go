@@ -22,6 +22,7 @@ type CloudConfig struct {
 	User                      string
 	Gpus                      string
 	Gat0, Gat1, Gat2          []string
+	Cmd                       string
 }
 
 var (
@@ -39,7 +40,7 @@ var (
 	}
 	// docker commit -c "ENTRYPOINT []" does not clear entrypoint.  Use build.
 	gat1 = []string{
-		`/bin/bash -c "docker run --network host{{ .Gpus }}{{ range .Envs }}{{ . | printf " --env %s" }}{{ end }} --env {{ .ServiceAccountEnv }}=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/credentials --privileged{{ if .User }}{{ .User | printf " --user %s" }}{{ end }} -v /dev:/dev --name gat-run-container gat-sentinel"`,
+		`/bin/bash -c "docker run --network host{{ .Gpus }}{{ range .Envs }}{{ . | printf " --env %s" }}{{ end }} --env {{ .ServiceAccountEnv }}=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/credentials --privileged{{ if .User }}{{ .User | printf " --user %s" }}{{ end }} -v /dev:/dev --name gat-run-container gat-sentinel{{ if .Cmd }} {{ .Cmd }}{{ end }}"`,
 		`/usr/bin/docker commit gat-run-container gat-run`,
 		`/usr/bin/docker rm gat-run-container`,
 		`/usr/bin/docker rmi gat-sentinel`,
@@ -310,6 +311,7 @@ func DockerCommands(c *cli.Context, tag string, bucket string, envs []string) st
 			Gat0:                      gat0,
 			Gat1:                      gat1,
 			Gat2:                      gat2,
+			Cmd:                       c.String("command"),
 		}); err != nil {
 			panic(err)
 		}
@@ -349,6 +351,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 			Gat0:              gat0,
 			Gat1:              gat1,
 			Gat2:              gat2,
+			Cmd:               c.String("command"),
 		}); err != nil {
 			panic(err)
 		}
@@ -383,6 +386,7 @@ func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string
 			Gat0:                      gat0,
 			Gat1:                      gat1,
 			Gat2:                      gat2,
+			Cmd:                       c.String("command"),
 		}); err != nil {
 			panic(err)
 		}

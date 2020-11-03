@@ -2042,14 +2042,7 @@ func RunLocalCommand() *cli.Command {
 				command string
 				output  []byte
 			}
-			if configOut, err := executeShellWords(`gcloud config get-value pass_credentials_to_gsutil`); err != nil {
-				panic(err)
-			} else if origConfig, err := strconv.ParseBool(strings.TrimSpace(string(configOut))); origConfig {
-				executeShellWords(`gcloud config set pass_credentials_to_gsutil false`)
-				defer executeShellWords(`gcloud config set pass_credentials_to_gsutil true`)
-			} else if err != nil {
-				panic(err)
-			}
+			// executeShellWords(`gcloud config set pass_credentials_to_gsutil false`)
 			defer func() {
 				if r := recover(); r != nil {
 					for _, str := range commands {
@@ -2750,6 +2743,10 @@ func runRemoteFlags() []cli.Flag {
 			Name:  "env",
 			Usage: "Docker command line option --env, e.g., KAGGLE_USERNAME=kaggler",
 		},
+		&cli.StringFlag{
+			Name:  "command",
+			Usage: "Docker command (arguments to entrypoint)",
+		},
 	}
 }
 
@@ -2770,6 +2767,10 @@ func runLocalFlags() []cli.Flag {
 		&cli.StringSliceFlag{
 			Name:  "env",
 			Usage: "Docker command line option --env, e.g., KAGGLE_USERNAME=kaggler",
+		},
+		&cli.StringFlag{
+			Name:  "command",
+			Usage: "Docker command (arguments to entrypoint)",
 		},
 	}
 }
