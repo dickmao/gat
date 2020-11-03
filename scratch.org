@@ -305,7 +305,11 @@ aws iam delete-role --role-name gatServiceRole
 
 ssh ec2-user@$(aws ec2 --region us-east-2 describe-instances --filters Name=instance-state-code,Values=16,64,80 --query Reservations[*].Instances[*].[PublicDnsName] --output text)
 
+aws ec2 --region us-east-2 describe-instances --filters Name=tag:Name,Values=kaggle-api:master Name=instance-state-name,Values=running --query Reservations[*].Instances[*].[PublicIpAddress] --output text
+
 aws ec2 --region us-east-2 terminate-instances --instance-ids $(aws ec2 --region us-east-2 describe-instances --filters Name=instance-state-code,Values=16,64,80 --query Reservations[*].Instances[*].[InstanceId] --output text)
+
+aws logs filter-log-events --log-group-name kaggle-api-master --log-stream-names journal --filter-pattern "gat1" | jq -r '.events[].message' | jq -r '.message'
 
 Under ECS, you're supposed to specify resourceRequirements in task definition to leverage a GPU, and the nvidia/cuda:9.0-base image.  I won't be using ECS tasks (which I'd done previously with a funky `ecscli compose` dev.jsonnet.TEMPLATE).
 

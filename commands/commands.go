@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -60,6 +60,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/spf13/viper"
 
 	godigest "github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v2"
@@ -654,7 +655,41 @@ func processEnvs(envs []string) []string {
 	return envs
 }
 
-func printLogEntries(qFirst bool, term *bool, lastInsertId *string) func(r *logging.ListLogEntriesResponse) error {
+func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string) func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
+	return func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
+		myPayload := struct {
+			Message          string `json:"message"`
+			Host             string `json:"host"`
+			SourceType       string `json:"source_type"`
+			Priority         string `json:"PRIORITY"`
+			SyslogFacility   string `json:"SYSLOG_FACILITY"`
+			SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
+		}{}
+		f := bufio.NewWriter(os.Stdout)
+		defer f.Flush()
+		var newLastInsertId string
+		for _, event := range page.Events {
+			if !qFirst && len(newLastInsertId) == 0 && len(*lastInsertId) > 0 {
+				if *event.EventId == *lastInsertId {
+					newLastInsertId = *lastInsertId
+				}
+				continue
+			}
+			newLastInsertId = *event.EventId
+			if err := json.Unmarshal([]byte(*event.Message), &myPayload); err != nil {
+				panic(err)
+			}
+			if !*term && len(until) > 0 {
+				*term = strings.Contains(myPayload.Message, until)
+			}
+			f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
+		}
+		*lastInsertId = newLastInsertId
+		return lastPage
+	}
+}
+
+func printLogGce(qFirst bool, term *bool, lastInsertId *string) func(r *logging.ListLogEntriesResponse) error {
 	return func(r *logging.ListLogEntriesResponse) error {
 		myPayload := struct {
 			Message          string `json:"MESSAGE"`
@@ -695,6 +730,63 @@ func recordTargetId(lastInstanceId *uint64) func(ol *compute.OperationList) erro
 	}
 }
 
+func ensureJupyterSecurityGroup(c *cli.Context) (*string, error) {
+	const jupyterSecurityGroupName string = "gatJupyterSecurityGroup"
+	region := c.String("region")
+	sess, _ := session.NewSessionWithOptions(session.Options{
+		Config: aws.Config{
+			Region: aws.String(region),
+		},
+		SharedConfigState: session.SharedConfigEnable,
+	})
+	svc := ec2.New(sess)
+	var jupyterSecurityGroupId *string
+	if result, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupNames: []*string{aws.String(jupyterSecurityGroupName)},
+	}); err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case "InvalidGroup.NotFound":
+				if result, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+					Description: aws.String(jupyterSecurityGroupName),
+					GroupName:   aws.String(jupyterSecurityGroupName),
+				}); err != nil {
+					return nil, err
+				} else if _, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+					FromPort:   aws.Int64(8888),
+					ToPort:     aws.Int64(8888),
+					GroupId:    result.GroupId,
+					IpProtocol: aws.String("tcp"),
+					CidrIp:     aws.String("0.0.0.0/0"),
+				}); err != nil {
+					svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+						GroupId: result.GroupId,
+					})
+					return nil, err
+				} else if _, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+					FromPort:   aws.Int64(22),
+					ToPort:     aws.Int64(22),
+					GroupId:    result.GroupId,
+					IpProtocol: aws.String("tcp"),
+					CidrIp:     aws.String("0.0.0.0/0"),
+				}); err != nil {
+					svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+						GroupId: result.GroupId,
+					})
+					return nil, err
+				} else {
+					jupyterSecurityGroupId = result.GroupId
+				}
+			default:
+				return nil, err
+			}
+		}
+	} else {
+		jupyterSecurityGroupId = result.SecurityGroups[0].GroupId
+	}
+	return jupyterSecurityGroupId, nil
+}
+
 func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 	const instanceProfileName string = "gat"
 	const instanceProfileRoleName string = "gatServiceRole"
@@ -710,7 +802,7 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 	var instanceProfile *iam.InstanceProfile
 	var instanceProfileRole *iam.Role
 	svcIam := iam.New(session.New())
-	if result, err := svcIam.GetRole(&iam.GetRoleInput{
+	if _, err := svcIam.GetRole(&iam.GetRoleInput{
 		RoleName: aws.String(instanceProfileRoleName),
 	}); err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
@@ -753,6 +845,14 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 						RoleName: aws.String(instanceProfileRoleName),
 					})
 					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
 				} else {
 					instanceProfileRole = result.Role
 				}
@@ -762,8 +862,6 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 		} else {
 			return nil, err
 		}
-	} else {
-		instanceProfileRole = result.Role
 	}
 
 	if result, err := svcIam.GetInstanceProfile(&iam.GetInstanceProfileInput{
@@ -782,10 +880,6 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 					}
 				} else {
 					instanceProfile = result.InstanceProfile
-					svcIam.AddRoleToInstanceProfile(&iam.AddRoleToInstanceProfileInput{
-						InstanceProfileName: instanceProfile.InstanceProfileName,
-						RoleName:            instanceProfileRole.RoleName,
-					})
 				}
 			default:
 				return nil, aerr
@@ -796,6 +890,30 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 	} else {
 		instanceProfile = result.InstanceProfile
 	}
+
+	if instanceProfileRole != nil {
+		if _, err := svcIam.RemoveRoleFromInstanceProfile(&iam.RemoveRoleFromInstanceProfileInput{
+			InstanceProfileName: instanceProfile.InstanceProfileName,
+			RoleName:            instanceProfileRole.RoleName,
+		}); err != nil {
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				case iam.ErrCodeNoSuchEntityException:
+					// fine i suppose
+				default:
+					return nil, aerr
+				}
+			} else {
+				return nil, err
+			}
+		}
+		if _, err := svcIam.AddRoleToInstanceProfile(&iam.AddRoleToInstanceProfileInput{
+			InstanceProfileName: instanceProfile.InstanceProfileName,
+			RoleName:            instanceProfileRole.RoleName,
+		}); err != nil {
+			return nil, err
+		}
+	}
 	return instanceProfile, nil
 }
 
@@ -805,70 +923,31 @@ func TestCommand() *cli.Command {
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
 			region := c.String("region")
-			sess, err := session.NewSessionWithOptions(session.Options{
+			sess, _ := session.NewSessionWithOptions(session.Options{
 				Config: aws.Config{
 					Region: aws.String(region),
 				},
 				SharedConfigState: session.SharedConfigEnable,
 			})
 			svc := ec2.New(sess)
-			azs, err := svc.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{
-				Filters: []*ec2.Filter{
-					{
-						Name: aws.String("group-name"),
-						Values: []*string{
-							aws.String(region),
-						},
-					},
-					{
-						Name: aws.String("state"),
-						Values: []*string{
-							aws.String("available"),
+			result, _ := svc.DescribeVpcs(
+				&ec2.DescribeVpcsInput{
+					Filters: []*ec2.Filter{
+						&ec2.Filter{
+							Name: aws.String("isDefault"),
+							Values: []*string{
+								aws.String("true"),
+							},
 						},
 					},
 				},
-			})
+			)
+			fmt.Println(*result.Vpcs[0].VpcId)
+			sgid, err := ensureJupyterSecurityGroup(c)
 			if err != nil {
-				if aerr, ok := err.(awserr.Error); ok {
-					switch aerr.Code() {
-					default:
-						fmt.Println(aerr.Error())
-					}
-				} else {
-					fmt.Println(err.Error())
-				}
-				return nil
+				panic(err)
 			}
-			for _, op := range azs.AvailabilityZones {
-				fmt.Println(*op.ZoneName)
-			}
-
-			rand.Seed(time.Now().UnixNano())
-			for i, retries := 0, 5; i < retries+1; i++ {
-				if i >= retries {
-					panic("Retries exceeded")
-				}
-
-				_, resp := svc.CreateVolumeRequest(&ec2.CreateVolumeInput{
-					AvailabilityZone: azs.AvailabilityZones[rand.Intn(len(azs.AvailabilityZones))].ZoneName,
-					DryRun:           aws.Bool(true),
-					Size:             aws.Int64(1),
-				})
-				if resp != nil {
-					if reqErr, ok := err.(awserr.RequestFailure); ok {
-						if reqErr.StatusCode() == 400 {
-							awsErr, _ := err.(awserr.Error)
-							fmt.Println("Waiting... ", awsErr.Message())
-							time.Sleep(3000 * time.Millisecond)
-							continue
-						}
-						panic(reqErr)
-					}
-					panic(err)
-				} else {
-					break
-				}
-			}
+			fmt.Println(*sgid)
 			return nil
 		},
 	}
@@ -914,6 +993,19 @@ func runRemoteAws(c *cli.Context) error {
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
+	keyname := c.String("keyname")
+	if len(keyname) <= 0 {
+		if viper.IsSet("keyname") {
+			keyname = viper.GetString("keyname")
+		} else {
+			panic(fmt.Sprintf("Requires keyname in --keyname or config."))
+		}
+	} else {
+		if !viper.IsSet("keyname") {
+			viper.Set("keyname", keyname)
+			viper.WriteConfig()
+		}
+	}
 	infile := inputDockerfile(c)
 	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
@@ -947,7 +1039,7 @@ func runRemoteAws(c *cli.Context) error {
 
 	envs := processEnvs(c.StringSlice("env"))
 	tag := constructTag(c)
-	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, region)), gpus, envs)
+	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, region)), gpus, region, envs)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
@@ -975,12 +1067,16 @@ func runRemoteAws(c *cli.Context) error {
 	if err != nil {
 		panic(err)
 	}
-	var runResult *ec2.Reservation
-	for i, retries := 0, 5; i < retries+1; i++ {
+	sgid, err := ensureJupyterSecurityGroup(c)
+	if err != nil {
+		panic(err)
+	}
+	var reservation *ec2.Reservation
+	for i, retries := 0, 12; i < retries+1; i++ {
 		if i >= retries {
 			panic("Retries exceeded")
 		}
-		runResult, err = svc.RunInstances(&ec2.RunInstancesInput{
+		reservation, err = svc.RunInstances(&ec2.RunInstancesInput{
 			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
 				Arn: profile.Arn,
 			},
@@ -988,11 +1084,11 @@ func runRemoteAws(c *cli.Context) error {
 				MarketType:  aws.String(ec2.MarketTypeSpot),
 				SpotOptions: &ec2.SpotMarketOptions{},
 			},
-			ImageId:      aws.String("ami-08f0ed8a0f25cb70c"), // packer.json
+			ImageId:      aws.String("ami-02b8e6d3c495eb290"), // packer.json
 			InstanceType: aws.String(machine),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
-			KeyName:      aws.String("dick"), // FIXME
+			KeyName:      aws.String(keyname),
 			UserData:     &user_data,
 			BlockDeviceMappings: []*ec2.BlockDeviceMapping{
 				{
@@ -1002,13 +1098,16 @@ func runRemoteAws(c *cli.Context) error {
 					},
 				},
 			},
+			SecurityGroupIds: []*string{
+				sgid,
+			},
 		})
 		if err != nil {
 			if reqErr, ok := err.(awserr.RequestFailure); ok {
 				if reqErr.StatusCode() == 400 {
 					awsErr, _ := err.(awserr.Error)
 					fmt.Println("Waiting... ", awsErr.Message())
-					time.Sleep(3000 * time.Millisecond)
+					time.Sleep(10000 * time.Millisecond)
 					continue
 				}
 				panic(reqErr)
@@ -1019,7 +1118,7 @@ func runRemoteAws(c *cli.Context) error {
 		}
 	}
 	if _, errtag := svc.CreateTags(&ec2.CreateTagsInput{
-		Resources: []*string{runResult.Instances[0].InstanceId},
+		Resources: []*string{reservation.Instances[0].InstanceId},
 		Tags: []*ec2.Tag{
 			{
 				Key:   aws.String("Name"),
@@ -1029,7 +1128,35 @@ func runRemoteAws(c *cli.Context) error {
 	}); errtag != nil {
 		panic(errtag)
 	}
-	fmt.Println("Created instance", *runResult.Instances[0].InstanceId)
+	fmt.Println("Created instance", *reservation.Instances[0].InstanceId)
+
+	for i, retries := 0, 12; i < retries+1; i++ {
+		if i >= retries {
+			panic("Retries exceeded")
+		}
+		if output, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{
+			InstanceIds: []*string{
+				reservation.Instances[0].InstanceId,
+			},
+		}); err != nil {
+			panic(err)
+		} else {
+			var state string
+			if output.Reservations[0].Instances[0].State == nil {
+				state = "null"
+			} else {
+				state = *output.Reservations[0].Instances[0].State.Name
+			}
+			if state != ec2.InstanceStateNamePending && state != "null" {
+				fmt.Println(*output.Reservations[0].Instances[0].PublicIpAddress,
+					*output.Reservations[0].Instances[0].PublicDnsName)
+				break
+			}
+			fmt.Println("Instance state", state, "...")
+			time.Sleep(10000 * time.Millisecond)
+		}
+	}
+
 	return nil
 }
 
@@ -1057,7 +1184,41 @@ func LogCommand() *cli.Command {
 }
 
 func logAws(c *cli.Context) error {
-	return errors.New("unimplemented")
+	region := c.String("region")
+	svc := cloudwatchlogs.New(getAwsSession(region))
+	tag := constructTag(c)
+	after := time.Unix(c.Int64("after"), 0)
+	var term bool
+	var lastInsertId string
+	for qFirst := true; ; qFirst = false {
+		// I would use GetLogEventsPages with StartFromHead=true, but
+		// OutputLogEvent does not have an EventId member
+		if err := svc.FilterLogEventsPages(
+			&cloudwatchlogs.FilterLogEventsInput{
+				LogGroupName: aws.String(strings.ReplaceAll(tag, `:`, `-`)),
+				StartTime:    aws.Int64(after.UnixNano() / int64(time.Millisecond)),
+			},
+			printLogAws(qFirst, &term, &lastInsertId, c.String("until"))); err != nil {
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				default:
+					return aerr
+				}
+			}
+			return err
+		}
+		if !term && (c.Bool("follow") || len(c.String("until")) != 0) {
+			// delay between log entry and fluentd's
+			// recording is ~5s so only looking after
+			// `after` would miss entries in last
+			// five seconds.
+			after = time.Now().Add(-time.Minute)
+			time.Sleep(1200 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	return nil
 }
 
 func logGce(c *cli.Context) error {
@@ -1107,7 +1268,7 @@ func logGce(c *cli.Context) error {
 		if err := logging.NewEntriesService(loggingService).List(&logging.ListLogEntriesRequest{
 			Filter:        strings.Join(append(filter, fmt.Sprintf("timestamp >= \"%s\"", after.Format(time.RFC3339))), " AND "),
 			ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-		}).Pages(context.Background(), printLogEntries(qFirst, &term, &lastInsertId)); err != nil {
+		}).Pages(context.Background(), printLogGce(qFirst, &term, &lastInsertId)); err != nil {
 			panic(err)
 		}
 		if !term && c.Bool("follow") {
@@ -2581,6 +2742,10 @@ func runRemoteFlags() []cli.Flag {
 			Name:  "user",
 			Usage: "Docker command line option --user",
 		},
+		&cli.StringFlag{
+			Name:  "keyname",
+			Usage: "AWS keypair name",
+		},
 		&cli.StringSliceFlag{
 			Name:  "env",
 			Usage: "Docker command line option --env, e.g., KAGGLE_USERNAME=kaggler",
@@ -2647,6 +2812,14 @@ func logFlags() []cli.Flag {
 			Name:    "follow",
 			Aliases: []string{"f"},
 			Usage:   "tail -f",
+		},
+		&cli.StringFlag{
+			Name:  "until",
+			Usage: "Follow until string value seen",
+		},
+		&cli.Int64Flag{
+			Name:  "after",
+			Usage: "After this unixtime",
 		},
 	}
 }

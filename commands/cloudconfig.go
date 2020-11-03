@@ -4,6 +4,7 @@ import (
 	"bytes"
 	b64 "encoding/base64"
 	"fmt"
+	"strings"
 	"text/template"
 
 	"github.com/urfave/cli/v2"
@@ -11,6 +12,7 @@ import (
 
 type CloudConfig struct {
 	Tag                       string
+	Region                    string
 	RepositoryUri             string
 	Bucket                    string
 	ServiceAccountJsonContent string
@@ -37,7 +39,7 @@ var (
 	}
 	// docker commit -c "ENTRYPOINT []" does not clear entrypoint.  Use build.
 	gat1 = []string{
-		`/bin/bash -c "docker run{{ .Gpus }}{{ range .Envs }}{{ . | printf " --env %s" }}{{ end }} --env {{ .ServiceAccountEnv }}=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/credentials --privileged{{ if .User }}{{ .User | printf " --user %s" }}{{ end }} -v /dev:/dev --name gat-run-container gat-sentinel"`,
+		`/bin/bash -c "docker run --network host{{ .Gpus }}{{ range .Envs }}{{ . | printf " --env %s" }}{{ end }} --env {{ .ServiceAccountEnv }}=$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' {{ .Tag }} | sed 's/\"//g')/credentials --privileged{{ if .User }}{{ .User | printf " --user %s" }}{{ end }} -v /dev:/dev --name gat-run-container gat-sentinel"`,
 		`/usr/bin/docker commit gat-run-container gat-run`,
 		`/usr/bin/docker rm gat-run-container`,
 		`/usr/bin/docker rmi gat-sentinel`,
@@ -69,6 +71,45 @@ users:
 - default
 
 write_files:
+- path: /etc/systemd/system/cloudwatch-agent.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Run cloudwatch agent
+
+    [Service]
+    User=root
+    Type=oneshot
+    ExecStart=/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+- path: /etc/systemd/system/vector.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Vector
+
+    [Service]
+    User=root
+    ExecStart=/usr/bin/vector
+
+- path: /etc/vector/vector.toml
+  permissions: 0644
+  owner: root
+  content: |
+    [sources.journal-in]
+      type = "journald"
+      include_units = ["gat0", "gat1", "gat2"]
+
+    [sinks.journal-out]
+      encoding.codec = "json"
+      group_name = "{{ .Tag | ReplaceColon }}"
+      inputs = ["journal-in"]
+      region = "{{ .Region }}"
+      stream_name = "journal"
+      type = "aws_cloudwatch_logs"
+
 - path: /etc/systemd/system/gat0.service
   permissions: 0644
   owner: root
@@ -100,6 +141,20 @@ write_files:
     WorkingDirectory={{ .Workdir }}
     Type=oneshot
 {{ range .Gat1 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
+
+- path: /etc/systemd/system/gat1a.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Halt in-docker notebook server
+
+    [Service]
+    User=ec2-user
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
+    Type=oneshot
+    ExecStart=/bin/bash -c "docker exec gat-run-container start.sh pkill jupyter"
 
 - path: /etc/systemd/system/gat2.service
   permissions: 0644
@@ -263,8 +318,8 @@ func DockerCommands(c *cli.Context, tag string, bucket string, envs []string) st
 	return commands
 }
 
-func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, gpus string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start gat0.service", "start gat1.service", "start gat2.service"}
+func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, gpus string, region string, envs []string) string {
+	runcmd := []string{"daemon-reload", "start vector.service", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}
@@ -275,10 +330,15 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 	}
 	// double evaluation: could not get template {{block}} {{end}} to work.
 	for i := 0; i < 2; i++ {
-		t := template.Must(template.New("CloudConfig").Parse(userdata))
+		t := template.Must(template.New("CloudConfig").Funcs(template.FuncMap{
+			"ReplaceColon": func(x string) string {
+				return strings.ReplaceAll(x, ":", "-")
+			},
+		}).Parse(userdata))
 		var buf bytes.Buffer
 		if err := t.Execute(&buf, CloudConfig{
 			Tag:               tag,
+			Region:            region,
 			RepositoryUri:     repositoryUri,
 			Bucket:            bucket,
 			ServiceAccountEnv: "AWS_SHARED_CREDENTIALS_FILE",

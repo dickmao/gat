@@ -25,6 +25,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/prometheus/client_golang v1.7.1 // indirect
 	github.com/sirupsen/logrus v1.6.0
+	github.com/spf13/viper v1.7.1
 	github.com/urfave/cli/v2 v2.2.0
 	go.opencensus.io v0.22.4 // indirect
 	golang.org/x/net v0.0.0-20200707034311-ab3426394381 // indirect

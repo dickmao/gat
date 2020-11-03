@@ -8,6 +8,7 @@ import (
 	"time"
 
 	commands "github.com/dickmao/gat/commands"
+	"github.com/spf13/viper"
 
 	git "github.com/dickmao/git2go/v31"
 
@@ -22,7 +23,8 @@ func getRepo(path string, config *git.Config) (*git.Repository, error) {
 		repo   *git.Repository
 		reterr error
 	)
-	git_dir, err := git.Discover(path, true, nil)
+	parent_dir, _ := filepath.Abs(filepath.Join(path, ".."))
+	git_dir, err := git.Discover(path, true, []string{parent_dir})
 	if err != nil {
 		if err.(*git.GitError).Code == git.ErrNotFound {
 			repo, reterr = git.InitRepository(path, false)
@@ -205,6 +207,22 @@ func main() {
 	logrus.SetLevel(logrus.InfoLevel)
 	logrus.SetOutput(os.Stdout)
 
+	viper.SetConfigName("config")
+	viper.SetConfigType("toml")
+	if _, ok := os.LookupEnv("XDG_CONFIG_HOME"); ok {
+		viper.AddConfigPath("$XDG_CONFIG_HOME/.config/gat")
+	} else {
+		viper.AddConfigPath("$HOME/.config/gat")
+	}
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			if err := viper.SafeWriteConfig(); err != nil {
+				panic(err)
+			}
+		} else {
+			panic(err)
+		}
+	}
 	repo, repo1, worktree, config := initGat(".")
 	defer repo.Free()
 	defer repo1.Free()

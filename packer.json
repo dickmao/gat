@@ -25,10 +25,15 @@
     ],
     "provisioners": [
         {
+            "type": "file",
+            "source": "amazon-cloudwatch-agent.json",
+            "destination": "/var/tmp/amazon-cloudwatch-agent.json"
+        },
+        {
             "type": "shell",
             "env_var_format": "%s=\"%s\" ",
             "environment_vars": ["GOPATH=$HOME/go", "PATH=$GOPATH/bin:$PATH"],
-            "inline": ["sudo amazon-linux-extras enable docker", "sudo yum -y install golang git awscli jq amazon-ecr-credential-helper"]
+            "inline": ["sudo amazon-linux-extras enable docker", "sudo yum -y install golang git awscli jq amazon-ecr-credential-helper amazon-cloudwatch-agent", "sudo cp /var/tmp/amazon-cloudwatch-agent.json /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json", "sudo curl --proto '=https' --tlsv1.2 -sSf https://sh.vector.dev | sudo sh -s -- -y"]
         }
     ]
 }

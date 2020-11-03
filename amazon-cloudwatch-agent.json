@@ -1,0 +1,18 @@
+{
+    "agent": {
+        "debug": true
+    },
+    "logs": {
+        "logs_collected": {
+            "files": {
+                "collect_list": [
+                    {
+                        "file_path": "/var/log/messages*",
+                        "log_group_name": "gat_log_{instance_id}"
+                    }
+                ]
+            }
+        },
+        "log_stream_name": "gat_log_stream"
+    }
+}
