@@ -32,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -731,7 +732,7 @@ func recordTargetId(lastInstanceId *uint64) func(ol *compute.OperationList) erro
 }
 
 func ensureJupyterSecurityGroup(c *cli.Context) (*string, error) {
-	const jupyterSecurityGroupName string = "gatJupyterSecurityGroup"
+	const jupyterSecurityGroupName string = "gat-jupyter"
 	region := c.String("region")
 	sess, _ := session.NewSessionWithOptions(session.Options{
 		Config: aws.Config{
@@ -1201,11 +1202,13 @@ func logAws(c *cli.Context) error {
 			printLogAws(qFirst, &term, &lastInsertId, c.String("until"))); err != nil {
 			if aerr, ok := err.(awserr.Error); ok {
 				switch aerr.Code() {
+				case cloudwatch.ErrCodeResourceNotFoundException:
 				default:
 					return aerr
 				}
+			} else {
+				return err
 			}
-			return err
 		}
 		if !term && (c.Bool("follow") || len(c.String("until")) != 0) {
 			// delay between log entry and fluentd's

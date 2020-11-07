@@ -51,7 +51,7 @@ var (
 		`/usr/bin/docker rm gat-cache-container`,
 	}
 	gat2 = []string{
-		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; function gsutil_cp { if [ -d {{ .Bucket }} ]; then cp $1 $2 ; else docker run -v $(dirname $1):/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT cp /hostpwd/\\$(basename $1) $2\" ; fi ; } ; journalctl -b -o cat --no-pager -u gat1 > /var/tmp/gat1.out ; gsutil_cp /var/tmp/gat1.out {{ .Bucket }}/gat.$(date +%%s) ;"`,
+		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; journalctl -b -o cat --no-pager -u gat1 > /var/tmp/gat1.out ; if [ -d {{ .Bucket }} ]; then mv /var/tmp/gat1.out {{ .Bucket }}/run-local/gat.$(date +%s) ; else docker run -v /var/tmp:/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT cp /hostpwd/gat1.out {{ .Bucket }}/gat.\\$(date +%%s)\" ; fi ;"`,
 		`/usr/bin/docker rmi gat-run`,
 	}
 )
