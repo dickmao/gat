@@ -111,6 +111,7 @@ var (
 	awsSts                     *sts.STS
 	awsEcr                     *ecr.ECR
 	awsS3                      *s3.S3
+	awsEC2                     *ec2.EC2
 	resourceManagerServiceOnce sync.Once
 	computeServiceOnce         sync.Once
 	containerServiceOnce       sync.Once
@@ -120,6 +121,7 @@ var (
 	awsStsOnce                 sync.Once
 	awsEcrOnce                 sync.Once
 	awsS3Once                  sync.Once
+	awsEC2Once                 sync.Once
 )
 
 type ServiceAccount struct {
@@ -329,6 +331,13 @@ func getClientStorage() *storage.Client {
 		}
 	})
 	return storageClient
+}
+
+func getAwsEC2(region string) *ec2.EC2 {
+	awsEC2Once.Do(func() {
+		awsEC2 = ec2.New(getAwsSession(region))
+	})
+	return awsEC2
 }
 
 func getAwsS3(region string) *s3.S3 {
@@ -734,13 +743,7 @@ func recordTargetId(lastInstanceId *uint64) func(ol *compute.OperationList) erro
 func ensureJupyterSecurityGroup(c *cli.Context) (*string, error) {
 	const jupyterSecurityGroupName string = "gat-jupyter"
 	region := c.String("region")
-	sess, _ := session.NewSessionWithOptions(session.Options{
-		Config: aws.Config{
-			Region: aws.String(region),
-		},
-		SharedConfigState: session.SharedConfigEnable,
-	})
-	svc := ec2.New(sess)
+	svc := getAwsEC2(region)
 	var jupyterSecurityGroupId *string
 	if result, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
 		GroupNames: []*string{aws.String(jupyterSecurityGroupName)},
@@ -854,6 +857,38 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 						RoleName: aws.String(instanceProfileRoleName),
 					})
 					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/AWSLambdaFullAccess"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/CloudWatchEventsFullAccess"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
+				} else if _, err = svcIam.AttachRolePolicy(&iam.AttachRolePolicyInput{
+					PolicyArn: aws.String("arn:aws:iam::aws:policy/IAMFullAccess"),
+					RoleName:  aws.String(instanceProfileRoleName),
+				}); err != nil {
+					svcIam.DeleteRole(&iam.DeleteRoleInput{
+						RoleName: aws.String(instanceProfileRoleName),
+					})
+					return nil, err
 				} else {
 					instanceProfileRole = result.Role
 				}
@@ -924,13 +959,7 @@ func TestCommand() *cli.Command {
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
 			region := c.String("region")
-			sess, _ := session.NewSessionWithOptions(session.Options{
-				Config: aws.Config{
-					Region: aws.String(region),
-				},
-				SharedConfigState: session.SharedConfigEnable,
-			})
-			svc := ec2.New(sess)
+			svc := getAwsEC2(region)
 			result, _ := svc.DescribeVpcs(
 				&ec2.DescribeVpcsInput{
 					Filters: []*ec2.Filter{
@@ -1056,16 +1085,8 @@ func runRemoteAws(c *cli.Context) error {
 			}
 		}
 	}
-	sess, err := session.NewSessionWithOptions(session.Options{
-		Config: aws.Config{
-			Region: aws.String(region),
-		},
-		SharedConfigState: session.SharedConfigEnable,
-	})
-
-	svc := ec2.New(sess)
 	profile, err := ensureInstanceProfile()
-	if err != nil {
+	if err != nil || profile == nil {
 		panic(err)
 	}
 	sgid, err := ensureJupyterSecurityGroup(c)
@@ -1073,6 +1094,7 @@ func runRemoteAws(c *cli.Context) error {
 		panic(err)
 	}
 	var reservation *ec2.Reservation
+	svc := getAwsEC2(region)
 	for i, retries := 0, 12; i < retries+1; i++ {
 		if i >= retries {
 			panic("Retries exceeded")
@@ -1131,6 +1153,30 @@ func runRemoteAws(c *cli.Context) error {
 	}
 	fmt.Println("Created instance", *reservation.Instances[0].InstanceId)
 
+	var assocs *ec2.DescribeIamInstanceProfileAssociationsOutput
+	if assocs, err = svc.DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+		Filters: []*ec2.Filter{
+			&ec2.Filter{
+				Name: aws.String("instance-id"),
+				Values: []*string{
+					reservation.Instances[0].InstanceId,
+				},
+			},
+		},
+	}); err != nil {
+		panic(err)
+	} else if _, err := svc.DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{
+		AssociationId: assocs.IamInstanceProfileAssociations[0].AssociationId,
+	}); err != nil {
+		panic(err)
+	} else if _, err := svc.AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
+			Arn: profile.Arn,
+		},
+		InstanceId: reservation.Instances[0].InstanceId,
+	}); err != nil {
+		// panic(err)
+	}
 	for i, retries := 0, 12; i < retries+1; i++ {
 		if i >= retries {
 			panic("Retries exceeded")
