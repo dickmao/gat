@@ -101,7 +101,7 @@ write_files:
   content: |
     [sources.journal-in]
       type = "journald"
-      include_units = ["gat0", "gat1", "gat2"]
+      include_units = ["gat0", "gat1", "gat2", "shutdown"]
 
     [sinks.journal-out]
       encoding.codec = "json"

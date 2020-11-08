@@ -665,7 +665,7 @@ func processEnvs(envs []string) []string {
 	return envs
 }
 
-func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string) func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
+func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string, nextunit string) func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
 	return func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
 		myPayload := struct {
 			Message          string `json:"message"`
@@ -674,6 +674,7 @@ func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string) fu
 			Priority         string `json:"PRIORITY"`
 			SyslogFacility   string `json:"SYSLOG_FACILITY"`
 			SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
+			SystemdUnit      string `json:"_SYSTEMD_UNIT"`
 		}{}
 		f := bufio.NewWriter(os.Stdout)
 		defer f.Flush()
@@ -691,6 +692,9 @@ func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string) fu
 			}
 			if !*term && len(until) > 0 {
 				*term = strings.Contains(myPayload.Message, until)
+			}
+			if !*term && len(nextunit) > 0 {
+				*term = myPayload.SystemdUnit == nextunit
 			}
 			f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
 		}
@@ -948,6 +952,10 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 			RoleName:            instanceProfileRole.RoleName,
 		}); err != nil {
 			return nil, err
+		} else if out, err := svcIam.ListAttachedRolePolicies(&iam.ListAttachedRolePoliciesInput{
+			RoleName: instanceProfileRole.RoleName,
+		}); err != nil || len(out.AttachedPolicies) < 5 {
+			return nil, err
 		}
 	}
 	return instanceProfile, nil
@@ -1153,30 +1161,6 @@ func runRemoteAws(c *cli.Context) error {
 	}
 	fmt.Println("Created instance", *reservation.Instances[0].InstanceId)
 
-	var assocs *ec2.DescribeIamInstanceProfileAssociationsOutput
-	if assocs, err = svc.DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
-		Filters: []*ec2.Filter{
-			&ec2.Filter{
-				Name: aws.String("instance-id"),
-				Values: []*string{
-					reservation.Instances[0].InstanceId,
-				},
-			},
-		},
-	}); err != nil {
-		panic(err)
-	} else if _, err := svc.DisassociateIamInstanceProfile(&ec2.DisassociateIamInstanceProfileInput{
-		AssociationId: assocs.IamInstanceProfileAssociations[0].AssociationId,
-	}); err != nil {
-		panic(err)
-	} else if _, err := svc.AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
-		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
-			Arn: profile.Arn,
-		},
-		InstanceId: reservation.Instances[0].InstanceId,
-	}); err != nil {
-		// panic(err)
-	}
 	for i, retries := 0, 12; i < retries+1; i++ {
 		if i >= retries {
 			panic("Retries exceeded")
@@ -1245,7 +1229,7 @@ func logAws(c *cli.Context) error {
 				LogGroupName: aws.String(strings.ReplaceAll(tag, `:`, `-`)),
 				StartTime:    aws.Int64(after.UnixNano() / int64(time.Millisecond)),
 			},
-			printLogAws(qFirst, &term, &lastInsertId, c.String("until"))); err != nil {
+			printLogAws(qFirst, &term, &lastInsertId, c.String("until"), c.String("nextunit"))); err != nil {
 			if aerr, ok := err.(awserr.Error); ok {
 				switch aerr.Code() {
 				case cloudwatch.ErrCodeResourceNotFoundException:
@@ -1256,7 +1240,7 @@ func logAws(c *cli.Context) error {
 				return err
 			}
 		}
-		if !term && (c.Bool("follow") || len(c.String("until")) != 0) {
+		if !term && (c.Bool("follow") || len(c.String("until")) != 0 || len(c.String("nextunit")) != 0) {
 			// delay between log entry and fluentd's
 			// recording is ~5s so only looking after
 			// `after` would miss entries in last
@@ -2866,6 +2850,10 @@ func logFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "until",
 			Usage: "Follow until string value seen",
+		},
+		&cli.StringFlag{
+			Name:  "nextunit",
+			Usage: "Follow until _SYSTEMD_UNIT assumes this value",
 		},
 		&cli.Int64Flag{
 			Name:  "after",
