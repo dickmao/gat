@@ -5,3 +5,4 @@ docs/build
 docs/source/conf.py
 venv
 cos_gpu_installer.go
+cos_gpu_installer_generate/cos_gpu_installer_generate
