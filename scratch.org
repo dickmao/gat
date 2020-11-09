@@ -332,7 +332,7 @@ opensciencegrid/tensorflow-gpu assumes nvidia/cuda and recreates jupyter stuff (
 ~"bash -c 'docker build -t nvidia/cuda:gat - < <(cat <<EOF\nFROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04\nRUN set -xe && apt-get -yq update && DEBIAN_FRONTEND=noninteractive apt-get -yq install python3 ipython3 python3-pip vim && python3 -m pip install --upgrade pip && python3 -m pip install tensorflow matplotlib\nEOF\n)'"~
 
 just show me the goods:
-cat eager.nbconvert.ipynb | jq '..|.text?'
+cat eager.nbconvert.ipynb | jq '..|.text?|select(. != null)'
 
 ** kaggle p100
 
