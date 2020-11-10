@@ -1,7 +1,18 @@
 export VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo 0.0.2)
 XDG_CONFIG_HOME ?= $(HOME)/.config
 XDG_DATA_HOME ?= $(HOME)/.local/share
-LIBDIR := $(XDG_DATA_HOME)/../lib
+UNAME := $(shell uname)
+
+LIBDIR := $(shell dirname $(XDG_DATA_HOME))/lib
+ifeq ($(UNAME), Darwin)
+LIBDIR := /usr/local/lib
+endif
+
+LIBSO := libgit2.so
+ifeq ($(UNAME), Darwin)
+LIBSO := libgit2.dylib
+endif
+
 PKG_CONFIG_PATH ?= $(LIBDIR)/pkgconfig
 export PKG_CONFIG_PATH
 
@@ -14,12 +25,13 @@ endef
 export VERSIONGO
 
 .PHONY: compile
-compile: version/version.go
+compile: version/version.go $(LIBDIR)/$(LIBSO)
 	go generate
 	go build
 
-$(LIBDIR)/libgit2.so:
-	$(eval LIBGIT2_DOWNLOAD:=$(shell curl -sSL https://api.github.com/repos/libgit2/libgit2/releases/27211993 | grep 'browser_download_url.*tar.gz"' | cut -d : -f 2,3 | tr -d \"))
+$(LIBDIR)/$(LIBSO):
+	mkdir -p $(LIBDIR)
+	$(eval LIBGIT2_DOWNLOAD:=https://github.com/libgit2/libgit2/releases/download/v1.1.0/libgit2-1.1.0.tar.gz)
 	$(eval LIBGIT2_SLUG:=$(subst .tar.gz,,$(shell basename $(LIBGIT2_DOWNLOAD))))
 	curl -sSL $(LIBGIT2_DOWNLOAD) | tar xzf -
 	mkdir -p $(LIBGIT2_SLUG)/build
@@ -34,13 +46,12 @@ $(LIBDIR)/libgit2.so:
 	  -DCMAKE_INSTALL_PREFIX=$(LIBDIR)/.. ; \
 	  cmake --build . --target install
 
-.PHONY: version/version.go
 version/version.go:
 	@mkdir -p version
 	echo "$$VERSIONGO" > $@
 
 .PHONY: install
-install: version/version.go $(LIBDIR)/libgit2.so $(XDG_CONFIG_HOME)/gat/source-gat bashrc
+install: compile $(XDG_CONFIG_HOME)/gat/source-gat bashrc
 	go install -v
 
 $(XDG_CONFIG_HOME)/gat/source-gat: source-gat
