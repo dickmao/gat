@@ -15,6 +15,7 @@ export VERSIONGO
 
 .PHONY: compile
 compile: version/version.go
+	go generate
 	go build
 
 $(LIBDIR)/libgit2.so:
