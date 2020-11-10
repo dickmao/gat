@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	git "github.com/dickmao/git2go/v31"
+	git "github.com/dickmao/git2go/v32"
 )
 
 func checkFatal(t *testing.T, err error) {

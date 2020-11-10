@@ -10,7 +10,7 @@ import (
 	commands "github.com/dickmao/gat/commands"
 	"github.com/spf13/viper"
 
-	git "github.com/dickmao/git2go/v31"
+	git "github.com/dickmao/git2go/v32"
 
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"

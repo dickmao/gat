@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	git "github.com/dickmao/git2go/v31"
+	git "github.com/dickmao/git2go/v32"
 )
 
 func headCommit(repo *git.Repository) (*git.Commit, error) {

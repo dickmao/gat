@@ -41,7 +41,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/dickmao/gat/cos_gpu_installer"
 	"github.com/dickmao/gat/version"
-	git "github.com/dickmao/git2go/v31"
+	git "github.com/dickmao/git2go/v32"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/reference"
 	v2 "github.com/docker/distribution/registry/api/v2"
