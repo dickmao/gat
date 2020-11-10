@@ -284,7 +284,7 @@ suggesting it can't run on aws.
 aws ec2 --region us-east-2 run-instances --image-id ami-0769010598735bd45 --count 1 --instance-type t2.micro --key-name dick
 
 ** TODO aws native
-aws ec2 deregister-image --image-id $(aws ec2 describe-images --filters "Name=name,Values=packer-gat*" --query 'Images[*].[ImageId]' --output text) ; packer build     -var 'aws_access_key=AKIAIY5QIBXHBAAIK2TA'     -var 'aws_secret_key=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'   packer.json
+aws ec2 deregister-image --image-id $(aws ec2 describe-images --filters "Name=name,Values=packer-gat*" --query 'Images[*].[ImageId]' --output text) ; packer build     -var 'aws_access_key=**************K2TA'     -var 'aws_secret_key=******************kH/f'   packer.json
 
 create an iamprofile and link it to t2.micro.  So I need to cloudformation create-stack.  don't create a stack because user is going to delete instances manually (and leave the iamprofile orphaned).
 
@@ -437,7 +437,7 @@ i'm afraid gonna burn three hours, and lose it all
 
 ** gsutil s3
 
-gsutil -o Credentials:aws_access_key_id=AKIAIY5QIBXHBAAIK2TA -o Credentials:aws_secret_access_key=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 -o s3:host=s3-us-east-2.amazonaws.com cp eager.ipynb s3://303634175659-test-repo2-master/run-local/
+gsutil -o Credentials:aws_access_key_id=*************K2TA -o Credentials:aws_secret_access_key=******************kH/f -o s3:host=s3-us-east-2.amazonaws.com cp eager.ipynb s3://303634175659-test-repo2-master/run-local/
 
 shuttling one's AWS_DEFAULT_SHARED_CREDENTIALS is problematic.
 
