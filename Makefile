@@ -16,6 +16,9 @@ endif
 PKG_CONFIG_PATH ?= $(LIBDIR)/pkgconfig
 export PKG_CONFIG_PATH
 
+LIBGIT2_DOWNLOAD:=https://github.com/libgit2/libgit2/releases/download/v1.1.0/libgit2-1.1.0.tar.gz
+LIBGIT2_SLUG:=$(subst .tar.gz,,$(shell basename $(LIBGIT2_DOWNLOAD)))
+
 define VERSIONGO
 package version
 
@@ -31,8 +34,6 @@ compile: version/version.go $(LIBDIR)/$(LIBSO)
 
 $(LIBDIR)/$(LIBSO):
 	mkdir -p $(LIBDIR)
-	$(eval LIBGIT2_DOWNLOAD:=https://github.com/libgit2/libgit2/releases/download/v1.1.0/libgit2-1.1.0.tar.gz)
-	$(eval LIBGIT2_SLUG:=$(subst .tar.gz,,$(shell basename $(LIBGIT2_DOWNLOAD))))
 	curl -sSL $(LIBGIT2_DOWNLOAD) | tar xzf -
 	mkdir -p $(LIBGIT2_SLUG)/build
 	cd $(LIBGIT2_SLUG)/build ; \
@@ -85,6 +86,7 @@ bashrc:
 .PHONY: clean
 clean:
 	go clean -i
+	rm -rf $(LIBGIT2_SLUG)
 
 .PHONY: install-tools
 install-tools:

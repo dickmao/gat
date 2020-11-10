@@ -14,7 +14,7 @@ require (
 	github.com/Microsoft/hcsshim v0.8.9 // indirect
 	github.com/aws/aws-sdk-go v1.31.6
 	github.com/containerd/continuity v0.0.0-20200710164510-efbc4488d8fe // indirect
-	github.com/dickmao/git2go/v31 v31.0.0
+	github.com/dickmao/git2go/v31 v31.3.2
 	github.com/docker/distribution v2.7.1+incompatible
 	github.com/docker/docker v17.12.0-ce-rc1.0.20200309214505-aa6a9891b09c+incompatible
 	github.com/docker/go-metrics v0.0.1 // indirect
