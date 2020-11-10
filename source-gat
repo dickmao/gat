@@ -66,12 +66,12 @@ function gat() {
   done
   zone="-"
   project="-"
-  region=${region:-$(gcloud config get-value compute/region 2>/dev/null)}
+  region=${region:-$(gcloud config get-value compute/region 2>/dev/null || true)}
   if [ ! -z $region ] && [[ ! $region =~ -[0-9]$ ]]; then
       # gce
-      zone=${zone:-$(gcloud config get-value compute/zone)}
+      zone=${zone:-$(gcloud config get-value compute/zone || true)}
       if [ -z $zone ]; then return -1; fi
-      project=${project:-$(gcloud config get-value core/project)}
+      project=${project:-$(gcloud config get-value core/project || true)}
       if [ -z $project ]; then return -1; fi
   elif [ -z $region ]; then
       region=$(aws configure get region 2>/dev/null);

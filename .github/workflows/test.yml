@@ -87,10 +87,10 @@ jobs:
       run: |
          mkdir -p ~/local
          if [ ! -e ~/local/lib/libgit2.so ]; then \
-            if [ ! -e ~/local/libgit2-1.0.1 ]; then \
-               cd ~/local && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
+            if [ ! -e ~/local/libgit2-1.1.0 ]; then \
+               cd ~/local && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.1.0/libgit2-1.1.0.tar.gz && tar xfz libgit2-1.1.0.tar.gz ; \
             fi ; \
-            cd ~/local/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/local && cmake --build . --target install ; \
+            cd ~/local/libgit2-1.1.0 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" -DCMAKE_INSTALL_PREFIX=~/local && cmake --build . --target install ; \
          fi
          cd $GITHUB_WORKSPACE
          LD_LIBRARY_PATH=~/local/lib PKG_CONFIG_PATH=~/local/lib/pkgconfig make test
@@ -99,7 +99,7 @@ jobs:
       if: startsWith(runner.os, 'macOS')
       run: |
          if [ ! -e /usr/local/lib/libgit2.dylib ]; then \
-            cd ~/Library && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.0.1/libgit2-1.0.1.tar.gz && tar xfz libgit2-1.0.1.tar.gz ; \
-            cd ~/Library/libgit2-1.0.1 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" && cmake --build . --target install ; \
+            cd ~/Library && curl -sLk -O https://github.com/libgit2/libgit2/releases/download/v1.1.0/libgit2-1.1.0.tar.gz && tar xfz libgit2-1.1.0.tar.gz ; \
+            cd ~/Library/libgit2-1.1.0 && mkdir -p build && cd build && cmake .. -DTHREADSAFE=ON -DBUILD_CLAR=OFF -DBUILD_SHARED_LIBS=ON -DREGEX_BACKEND=builtin -DCMAKE_C_FLAGS=-fPIC -DCMAKE_BUILD_TYPE="RelWithDebInfo" && cmake --build . --target install ; \
          fi
          cd $GITHUB_WORKSPACE && make test
