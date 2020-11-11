@@ -7,8 +7,6 @@ LIBDIR := $(shell dirname $(XDG_DATA_HOME))/lib
 ifeq ($(UNAME), Darwin)
 LIBDIR := /usr/local/lib
 endif
-$(info $$UNAME is ${UNAME})
-$(info $$LIBDIR is ${LIBDIR})
 
 LIBSO := libgit2.so
 ifeq ($(UNAME), Darwin)
