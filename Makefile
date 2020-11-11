@@ -8,9 +8,9 @@ ifeq ($(UNAME), Darwin)
 LIBDIR := /usr/local/lib
 endif
 
-LIBSO := libgit2.so
+LIBSO := libgit2.so.1.1.0
 ifeq ($(UNAME), Darwin)
-LIBSO := libgit2.dylib
+LIBSO := libgit2.1.1.0.dylib
 endif
 
 PKG_CONFIG_PATH ?= $(LIBDIR)/pkgconfig
@@ -29,6 +29,7 @@ export VERSIONGO
 
 .PHONY: compile
 compile: version/version.go $(LIBDIR)/$(LIBSO)
+	ls $(LIBDIR)/*
 	go generate
 	go build
 
