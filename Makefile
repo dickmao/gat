@@ -29,7 +29,6 @@ export VERSIONGO
 
 .PHONY: compile
 compile: version/version.go $(LIBDIR)/$(LIBSO)
-	ls $(LIBDIR)/*
 	go generate
 	go build
 
