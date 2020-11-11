@@ -62,11 +62,6 @@ jobs:
           /usr/local/bin/pkg-config
         key: ${{ runner.os }}-pkgconfig-000
 
-    - name: paths
-      uses: dickmao/setup-paths@master
-      with:
-        paths: local/bin
-
     - name: apt-get
       if: startsWith(runner.os, 'Linux')
       run: |
