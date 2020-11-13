@@ -3,9 +3,14 @@ XDG_CONFIG_HOME ?= $(HOME)/.config
 XDG_DATA_HOME ?= $(HOME)/.local/share
 UNAME := $(shell uname)
 
-LIBDIR := $(shell dirname $(XDG_DATA_HOME))/lib
+LIBDIR := $(dir $(XDG_DATA_HOME))lib
 ifeq ($(UNAME), Darwin)
 LIBDIR := /usr/local/lib
+endif
+
+BINDIR := $(dir $(XDG_DATA_HOME))bin
+ifeq ($(UNAME), Darwin)
+BINDIR := /usr/local/bin
 endif
 
 LIBSO := libgit2.so.1.1.0
@@ -26,6 +31,19 @@ const Version string = "$(VERSION)"
 endef
 
 export VERSIONGO
+
+# https://stackoverflow.com/a/23324703/5132008
+MAKE_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
+
+$(MAKE_DIR)s3fs-fuse:
+	cd $(MAKE_DIR); \
+	  git clone https://github.com/s3fs-fuse/s3fs-fuse.git
+
+$(BINDIR)/s3fs: $(MAKE_DIR)s3fs-fuse
+	cd $< ; \
+	  ./autogen.sh ; \
+	  ./configure --prefix=$(dir $(@D)) ; \
+	  make install
 
 .PHONY: compile
 compile: version/version.go $(LIBDIR)/$(LIBSO)
@@ -52,7 +70,7 @@ version/version.go:
 	echo "$$VERSIONGO" > $@
 
 .PHONY: install
-install: compile $(XDG_CONFIG_HOME)/gat/source-gat bashrc
+install: $(BINDIR)/s3fs compile $(XDG_CONFIG_HOME)/gat/source-gat bashrc
 	go install -v
 
 $(XDG_CONFIG_HOME)/gat/source-gat: source-gat

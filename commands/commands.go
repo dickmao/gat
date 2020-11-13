@@ -169,6 +169,109 @@ func gatId(c *cli.Context, prefix string) string {
 	return prefix + "-" + strings.ReplaceAll(constructTag(c), ":", "-")
 }
 
+func initGat(c *cli.Context) error {
+	var config *git.Config
+	if config_loc, err := git.ConfigFindGlobal(); err != nil {
+		if err.(*git.GitError).Code == git.ErrNotFound {
+			if nc, err := git.NewConfig(); err != nil {
+				return err
+			} else {
+				config = nc
+			}
+		} else {
+			return err
+		}
+	} else if oc, err := git.OpenOndisk(config_loc); err != nil {
+		return err
+	} else {
+		config = oc
+	}
+	repo, err := getRepo(".", config, true)
+	if err != nil {
+		return err
+	}
+	if _, err := repo.NewWorktreeFromSubrepository(); err == nil {
+		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())), config, true)
+		if err != nil {
+			return err
+		}
+	}
+	gat_path := filepath.Join(repo.Workdir(), ".gat")
+	git_dir1, err := git.Discover(gat_path, true, nil)
+	var repo1 *git.Repository
+	if err != nil {
+		if err.(*git.GitError).Code == git.ErrNotFound {
+			repo1, err = git.Clone(repo.Path(), gat_path, &git.CloneOptions{Bare: true})
+		}
+	} else {
+		repo1, err = git.OpenRepository(filepath.Clean(git_dir1))
+	}
+	if err != nil {
+		return err
+	}
+	for _, r := range []*git.Repository{repo, repo1} {
+		if err = r.AddIgnoreRule(strings.Join([]string{".gat", "run-local", "run-remote"}, "\n")); err != nil {
+			return err
+		}
+	}
+	if err = os.MkdirAll(filepath.Join(repo1.Path(), "objects/pack"),
+		os.ModePerm); err != nil {
+		return err
+	}
+	config1, err := repo1.Config()
+	if err != nil {
+		return err
+	}
+	config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
+	return nil
+}
+
+func ensureContext(c *cli.Context) error {
+	var config *git.Config
+	if config_loc, err := git.ConfigFindGlobal(); err != nil {
+		return err
+	} else if c, err := git.OpenOndisk(config_loc); err != nil {
+		return err
+	} else {
+		config = c
+	}
+	repo, err := getRepo(".", config, false)
+	if err != nil {
+		return err
+	}
+	worktree, err := repo.NewWorktreeFromSubrepository()
+	if err == nil {
+		repo, err = getRepo(filepath.Dir(filepath.Clean(repo.Workdir())), config, false)
+		if err != nil {
+			return err
+		}
+	}
+	gat_path := filepath.Join(repo.Workdir(), ".gat")
+	git_dir1, err := git.Discover(gat_path, true, nil)
+	var repo1 *git.Repository
+	if err != nil {
+		return err
+	} else if repo1, err = git.OpenRepository(filepath.Clean(git_dir1)); err != nil {
+		return err
+	}
+	for _, r := range []*git.Repository{repo, repo1} {
+		if err = r.AddIgnoreRule(strings.Join([]string{".gat", "run-local", "run-remote"}, "\n")); err != nil {
+			return err
+		}
+	}
+	if err = os.MkdirAll(filepath.Join(repo1.Path(), "objects/pack"),
+		os.ModePerm); err != nil {
+		return err
+	}
+	config1, err := repo1.Config()
+	if err != nil {
+		return err
+	}
+	config1.SetString("remote.origin.fetch", "refs/heads/*:refs/heads/*")
+	c.Context = NewContext(repo, repo1, worktree, config)
+	return nil
+}
+
 func ensureBucketGce(c *cli.Context) error {
 	project := c.String("project")
 	bucket := getClientStorage().Bucket(gatId(c, project))
@@ -966,6 +1069,9 @@ func TestCommand() *cli.Command {
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			region := c.String("region")
 			svc := getAwsEC2(region)
 			result, _ := svc.DescribeVpcs(
@@ -1001,6 +1107,9 @@ func RunRemoteCommand() *cli.Command {
 		Name:  "run-remote",
 		Flags: runRemoteFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			if isAwsRegion(c.String("region")) {
 				return runRemoteAws(c)
 			}
@@ -1027,7 +1136,6 @@ func runRemoteAws(c *cli.Context) error {
 	repo := c.Context.Value(repoKey).(*git.Repository)
 	repo1 := c.Context.Value(repo1Key).(*git.Repository)
 	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-	config := c.Context.Value(configKey).(*git.Config)
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
@@ -1045,7 +1153,7 @@ func runRemoteAws(c *cli.Context) error {
 		}
 	}
 	infile := inputDockerfile(c)
-	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+	if err := c.App.Run(
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
 		panic(err)
 	}
@@ -1206,6 +1314,9 @@ func LogCommand() *cli.Command {
 		Name:  "log",
 		Flags: logFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			if isAwsRegion(c.String("region")) {
 				return logAws(c)
 			}
@@ -1350,6 +1461,9 @@ func SendgridCommand() *cli.Command {
 		Name:  "sendgrid",
 		Flags: sendgridFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			project := c.String("project")
 			topic := url.Values{}
 			topic.Set("topic", "compute.googleapis.com/activity_log")
@@ -1502,6 +1616,9 @@ func RegistryCommand() *cli.Command {
 		Action: func(c *cli.Context) error {
 			// project := c.String("project")
 			// repo := c.Context.Value(repoKey).(*git.Repository)
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			if err := ensureBucketGce(c); err != nil {
 				panic(err)
 			}
@@ -1694,6 +1811,9 @@ func DockerfileCommand() *cli.Command {
 		Name: "dockerfile",
 		Action: func(c *cli.Context) error {
 			// input Dockerfile, output Dockerfile.gat
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			infile := requiredHack(c, "dockerfile", []string{"Dockerfile"})[0]
 			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 			if err != nil {
@@ -1751,15 +1871,14 @@ func BuildCommand() *cli.Command {
 		Name:  "build",
 		Flags: buildFlags(),
 		Action: func(c *cli.Context) error {
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			config := c.Context.Value(configKey).(*git.Config)
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
 			infile := inputDockerfile(c)
-			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config), []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile}); err != nil {
+			if err := c.App.Run([]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile}); err != nil {
 				return err
 			}
 			if err := buildImage(project, constructTag(c), infile+".gat"); err != nil {
@@ -1771,15 +1890,11 @@ func BuildCommand() *cli.Command {
 }
 
 func pushAws(c *cli.Context) error {
-	repo := c.Context.Value(repoKey).(*git.Repository)
-	repo1 := c.Context.Value(repo1Key).(*git.Repository)
-	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-	config := c.Context.Value(configKey).(*git.Config)
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
 	infile := inputDockerfile(c)
-	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+	if err := c.App.Run(
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
 		return err
 	}
@@ -1821,15 +1936,11 @@ func pushAws(c *cli.Context) error {
 }
 
 func pushGce(c *cli.Context) error {
-	repo := c.Context.Value(repoKey).(*git.Repository)
-	repo1 := c.Context.Value(repo1Key).(*git.Repository)
-	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-	config := c.Context.Value(configKey).(*git.Config)
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
 	infile := inputDockerfile(c)
-	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+	if err := c.App.Run(
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
 		return err
 	}
@@ -1866,6 +1977,9 @@ func PushCommand() *cli.Command {
 		Name:  "push",
 		Flags: pushFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			if isAwsRegion(c.String("region")) {
 				return pushAws(c)
 			}
@@ -1878,12 +1992,11 @@ func runRemoteGce(c *cli.Context) error {
 	repo := c.Context.Value(repoKey).(*git.Repository)
 	repo1 := c.Context.Value(repo1Key).(*git.Repository)
 	worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-	config := c.Context.Value(configKey).(*git.Config)
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
 	infile := inputDockerfile(c)
-	if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+	if err := c.App.Run(
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
 		panic(err)
 	}
@@ -2041,15 +2154,17 @@ func RunLocalCommand() *cli.Command {
 		Name:  "run-local",
 		Flags: runLocalFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
 			infile := inputDockerfile(c)
-			if err := c.App.RunContext(NewContext(repo, repo1, worktree, config),
+			if err := c.App.Run(
 				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
 				panic(err)
 			}
@@ -2563,6 +2678,19 @@ func CreateCommand() *cli.Command {
 		Name:  "create",
 		Flags: createFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				if giterr, ok := err.(*git.GitError); ok {
+					if giterr.Code == git.ErrNotFound {
+						if err := initGat(c); err != nil {
+							panic(err)
+						} else if err := ensureContext(c); err != nil {
+							panic(err)
+						}
+					}
+				} else {
+					panic(err)
+				}
+			}
 			processCpuProfileFlag(c)
 			var branchName string
 			var err error
@@ -2578,14 +2706,10 @@ func CreateCommand() *cli.Command {
 				}
 			}
 
-			repo := c.Context.Value(repoKey).(*git.Repository)
-			repo1 := c.Context.Value(repo1Key).(*git.Repository)
-			worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-			config := c.Context.Value(configKey).(*git.Config)
 			project := c.String("project")
 			zone := c.String("zone")
 			region := c.String("region")
-			return c.App.RunContext(NewContext(repo, repo1, worktree, config),
+			return c.App.Run(
 				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "edit", branchName})
 		},
 	}
@@ -2606,6 +2730,9 @@ func ListCommand() *cli.Command {
 		Name:  "list",
 		Flags: listFlags(),
 		Action: func(c *cli.Context) error {
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			brit, err := repo1.NewBranchIterator(git.BranchLocal)
 			if err != nil {
@@ -2628,12 +2755,76 @@ func ListCommand() *cli.Command {
 	}
 }
 
+func getRepo(path string, config *git.Config, create bool) (*git.Repository, error) {
+	var (
+		repo   *git.Repository
+		reterr error
+	)
+	parent_dir, _ := filepath.Abs(filepath.Join(path, ".."))
+	git_dir, err := git.Discover(path, true, []string{parent_dir})
+	if err != nil {
+		if create && err.(*git.GitError).Code == git.ErrNotFound {
+			repo, reterr = git.InitRepository(path, false)
+		} else {
+			return nil, err
+		}
+	} else {
+		if filepath.Base(filepath.Clean(git_dir)) == ".gat" {
+			git_dir, err = git.Discover(filepath.Dir(filepath.Clean(git_dir)), true, nil)
+			if err != nil {
+				return nil, err
+			}
+		}
+		repo, reterr = git.OpenRepository(filepath.Clean(git_dir))
+	}
+
+	if create && reterr == nil {
+		head, err := repo.Head()
+		if head != nil {
+			defer head.Free()
+		}
+		if err != nil && git.IsErrorClass(err, git.ErrClassReference) {
+			if idx, err := repo.Index(); err == nil {
+				defer idx.Free()
+				idx.UpdateAll([]string{"."}, nil)
+				idx.AddAll([]string{"."}, git.IndexAddDefault, nil)
+				var name, email string
+				if name, err = config.LookupString("user.name"); err != nil {
+					name = "gat"
+				}
+				if email, err = config.LookupString("user.email"); err != nil {
+					email = "none"
+				}
+				sig := &git.Signature{
+					Name:  name,
+					Email: email,
+					When:  time.Now()}
+				if treeID, err := idx.WriteTree(); err != nil {
+					return nil, err
+				} else if tree, err := repo.LookupTree(treeID); err != nil {
+					return nil, err
+				} else {
+					if err := idx.Write(); err != nil {
+						return nil, err
+					}
+					if _, err := repo.CreateCommit("HEAD", sig, sig, fmt.Sprintf("gat create %s", MasterWorktree), tree); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
+	return repo, reterr
+}
+
 func MasterCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "master",
 		Flags: masterFlags(),
 		Action: func(c *cli.Context) error {
-			processCpuProfileFlag(c)
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			repo := c.Context.Value(repoKey).(*git.Repository)
 			return cli.NewExitError(fmt.Sprintf("cd %s", filepath.Clean(repo.Workdir())), 7)
 		},
@@ -2645,7 +2836,9 @@ func EditCommand() *cli.Command {
 		Name:  "edit",
 		Flags: editFlags(),
 		Action: func(c *cli.Context) error {
-			processCpuProfileFlag(c)
+			if err := ensureContext(c); err != nil {
+				panic(err)
+			}
 			repo1 := c.Context.Value(repo1Key).(*git.Repository)
 			worktreeName := c.Args().Get(0)
 			if worktreeName == "" {
@@ -2655,13 +2848,10 @@ func EditCommand() *cli.Command {
 				}
 			}
 			if worktreeName == MasterWorktree {
-				repo := c.Context.Value(repoKey).(*git.Repository)
-				worktree := c.Context.Value(worktreeKey).(*git.Worktree)
-				config := c.Context.Value(configKey).(*git.Config)
 				project := c.String("project")
 				zone := c.String("zone")
 				region := c.String("region")
-				return c.App.RunContext(NewContext(repo, repo1, worktree, config),
+				return c.App.Run(
 					[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "master"})
 			}
 			_, err := repo1.LookupBranch(worktreeName, git.BranchLocal)
