@@ -229,7 +229,15 @@ func initGat(c *cli.Context) error {
 func ensureContext(c *cli.Context) error {
 	var config *git.Config
 	if config_loc, err := git.ConfigFindGlobal(); err != nil {
-		return err
+		if err.(*git.GitError).Code == git.ErrNotFound {
+			if nc, err := git.NewConfig(); err != nil {
+				return err
+			} else {
+				config = nc
+			}
+		} else {
+			return err
+		}
 	} else if c, err := git.OpenOndisk(config_loc); err != nil {
 		return err
 	} else {
