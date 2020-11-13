@@ -1,9 +1,10 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
-	commands "github.com/dickmao/gat/commands"
 	"github.com/urfave/cli/v2"
 )
 
@@ -12,19 +13,13 @@ func TestCreate(t *testing.T) {
 	repo := createTestRepo(t)
 	defer cleanupTestRepo(t, repo)
 	seedTestRepo(t, repo)
+	os.Chdir(filepath.Clean(repo.Path()))
 
-	repo, repo1, worktree, config := initGat(repo.Workdir())
-	defer repo.Free()
-	defer repo1.Free()
-	defer config.Free()
-	if worktree != nil {
-		defer worktree.Free()
-	}
 	app := newApp()
 	app.ExitErrHandler = func(context *cli.Context, err error) {
 		return
 	}
-	err := app.RunContext(commands.NewContext(repo, repo1, worktree, config),
+	err := app.Run(
 		[]string{app.Name, "--project", "project_test", "--zone", "zone_test",
 			"--region", "us-central", "create", "foobar"})
 	if err.(cli.ExitCoder).ExitCode() != 7 {

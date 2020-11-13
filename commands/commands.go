@@ -2686,6 +2686,8 @@ func CreateCommand() *cli.Command {
 						} else if err := ensureContext(c); err != nil {
 							panic(err)
 						}
+					} else {
+						panic(err)
 					}
 				} else {
 					panic(err)
