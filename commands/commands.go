@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -315,7 +316,8 @@ func getBucketNameAws(c *cli.Context, region string) string {
 	if err != nil {
 		panic(err)
 	}
-	return gatId(c, *identity.Account)
+	id := gatId(c, *identity.Account)
+	return id[0:int(math.Min(float64(len(id)), float64(63)))]
 }
 
 func mountBucketAws(c *cli.Context, region string, pwd string) error {
