@@ -93,8 +93,6 @@ write_files:
 
     [Service]
     User=root
-    Type=oneshot
-    ExecStart=/usr/bin/mkdir -p /var/lib/vector
     ExecStart=/root/.vector/bin/vector
 
 - path: /etc/vector/vector.toml
@@ -103,6 +101,7 @@ write_files:
   content: |
     [sources.journal-in]
       type = "journald"
+      data_dir = "/var/tmp"
       include_units = ["gat0", "gat1", "gat2", "shutdown"]
 
     [sinks.journal-out]
