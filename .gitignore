@@ -6,3 +6,5 @@ docs/source/conf.py
 venv
 cos_gpu_installer.go
 cos_gpu_installer_generate/cos_gpu_installer_generate
+s3fs-fuse
+libgit2-1.0.1
