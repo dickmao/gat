@@ -1233,7 +1233,7 @@ func runRemoteAws(c *cli.Context) error {
 				MarketType:  aws.String(ec2.MarketTypeSpot),
 				SpotOptions: &ec2.SpotMarketOptions{},
 			},
-			ImageId:      aws.String("ami-02b8e6d3c495eb290"), // packer.json
+			ImageId:      aws.String("ami-08c632da4a6a038f8"), // packer.json
 			InstanceType: aws.String(machine),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),

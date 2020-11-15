@@ -284,6 +284,8 @@ suggesting it can't run on aws.
 aws ec2 --region us-east-2 run-instances --image-id ami-0769010598735bd45 --count 1 --instance-type t2.micro --key-name dick
 
 ** TODO aws native
+for f in scipy tensorflow pytorch ; do docker build -t dickmao/${f}-gpu:latest - < Dockerfile.${f}-gpu ; docker push dickmao/${f}-gpu:latest ; done
+
 aws ec2 deregister-image --image-id $(aws ec2 describe-images --filters "Name=name,Values=packer-gat*" --query 'Images[*].[ImageId]' --output text) ; packer build     -var 'aws_access_key=**************K2TA'     -var 'aws_secret_key=******************kH/f'   packer.json
 
 create an iamprofile and link it to t2.micro.  So I need to cloudformation create-stack.  don't create a stack because user is going to delete instances manually (and leave the iamprofile orphaned).
