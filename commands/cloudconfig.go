@@ -93,7 +93,9 @@ write_files:
 
     [Service]
     User=root
-    ExecStart=/usr/bin/vector
+    Type=oneshot
+    ExecStart=/usr/bin/mkdir -p /var/lib/vector
+    ExecStart=/root/.vector/bin/vector
 
 - path: /etc/vector/vector.toml
   permissions: 0644
