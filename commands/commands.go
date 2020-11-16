@@ -1221,6 +1221,24 @@ func runRemoteAws(c *cli.Context) error {
 	}
 	var reservation *ec2.Reservation
 	svc := getAwsEC2(region)
+	ami, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+		ExecutableUsers: []*string{
+			aws.String("all"),
+		},
+		Filters: []*ec2.Filter{
+			&ec2.Filter{
+				Name: aws.String("tag:name"),
+				Values: []*string{
+					aws.String("packer-gat"),
+				},
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	} else if len(ami.Images) == 0 {
+		panic("No ami images found with tag:name 'packer-gat'")
+	}
 	for i, retries := 0, 12; i < retries+1; i++ {
 		if i >= retries {
 			panic("Retries exceeded")
@@ -1233,7 +1251,7 @@ func runRemoteAws(c *cli.Context) error {
 				MarketType:  aws.String(ec2.MarketTypeSpot),
 				SpotOptions: &ec2.SpotMarketOptions{},
 			},
-			ImageId:      aws.String("ami-08c632da4a6a038f8"), // packer.json
+			ImageId:      ami.Images[0].ImageId,
 			InstanceType: aws.String(machine),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
