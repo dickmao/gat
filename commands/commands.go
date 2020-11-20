@@ -1840,7 +1840,15 @@ func DockerfileCommand() *cli.Command {
 		Action: func(c *cli.Context) error {
 			// input Dockerfile, output Dockerfile.gat
 			if err := ensureContext(c); err != nil {
-				panic(err)
+				project := c.String("project")
+				zone := c.String("zone")
+				region := c.String("region")
+				if err := c.App.Run(
+					[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "create", MasterWorktree}); err != nil {
+					panic(err)
+				} else if err := ensureContext(c); err != nil {
+					panic(err)
+				}
 			}
 			infile := requiredHack(c, "dockerfile", []string{"Dockerfile"})[0]
 			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -2713,6 +2721,8 @@ func CreateCommand() *cli.Command {
 							panic(err)
 						} else if err := ensureContext(c); err != nil {
 							panic(err)
+						} else {
+							return nil
 						}
 					} else {
 						panic(err)

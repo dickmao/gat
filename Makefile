@@ -45,6 +45,14 @@ $(BINDIR)/s3fs: $(MAKE_DIR)s3fs-fuse
 	  ./configure --prefix=$(dir $(@D)) ; \
 	  make install
 
+.PHONY: ami
+ami: docker
+	bash packer.sh
+
+.PHONY: docker
+docker: Dockerfile.scipy-gpu Dockerfile.tensorflow-gpu Dockerfile.pytorch-gpu
+	for f in $^ ; do g=$$(echo $$f | sed s/Dockerfile.//) ; docker build -t dickmao/$${g}:latest - < $$f ; docker push dickmao/$${g}:latest ; done
+
 .PHONY: compile
 compile: version/version.go $(LIBDIR)/$(LIBSO)
 	go generate
