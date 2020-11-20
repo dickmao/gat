@@ -50,10 +50,18 @@ libnccl2=$NCCL_VERSION-1+cuda10.1 && \
 ENV CUDNN_VERSION 7.6.5.32
 LABEL com.nvidia.cudnn.version="${CUDNN_VERSION}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libcudnn7=$CUDNN_VERSION-1+cuda10.1 \
-&& \
-    apt-mark hold libcudnn7 && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y apt-utils 2>&1 | grep -v "delaying" \
+    && apt-get -y install --no-install-recommends gnupg wget python s3fs fuse libcudnn7=$CUDNN_VERSION-1+cuda10.1 \
+    && apt-mark hold libcudnn7 \
+    && wget -q https://storage.googleapis.com/pub/gsutil.tar.gz \
+    && tar xfz gsutil.tar.gz -C /opt \
+    && rm -f gsutil.tar.gz \
+    && wget -q https://github.com/dickmao/gcsfuse/files/5165307/gcsfuse.zip \
+    && unzip gcsfuse.zip \
+    && mv gcsfuse /usr/local/bin \
+    && rm -f gcsfuse.zip \
+    && chown -R $NB_UID /opt/gsutil \
+    && ln -s /opt/gsutil/gsutil /usr/local/bin \
+    && rm -rf /var/lib/apt/lists/*
 
 USER $NB_UID

@@ -1914,10 +1914,15 @@ func BuildCommand() *cli.Command {
 			zone := c.String("zone")
 			region := c.String("region")
 			infile := inputDockerfile(c)
-			if err := c.App.Run([]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile}); err != nil {
-				return err
+			infile_post := infile
+			bespoke := c.Bool("bespoke")
+			if !bespoke {
+				if err := c.App.Run([]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "dockerfile", infile}); err != nil {
+					return err
+				}
+				infile_post += ".gat"
 			}
-			if err := buildImage(project, constructTag(c), infile+".gat"); err != nil {
+			if err := buildImage(project, constructTag(c), infile_post); err != nil {
 				return err
 			}
 			return nil
@@ -1931,7 +1936,7 @@ func pushAws(c *cli.Context) error {
 	region := c.String("region")
 	infile := inputDockerfile(c)
 	if err := c.App.Run(
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
+		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--bespoke", "--dockerfile", infile}); err != nil {
 		return err
 	}
 
@@ -2299,7 +2304,9 @@ func pushImage(target string, tag string, jsonBytes []byte) error {
 }
 
 func buildBaseImage(cli *client.Client, baseTag string, infile string) (string, error) {
-	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{})
+	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{
+		ExcludePatterns: []string{"run-remote"},
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -2353,7 +2360,9 @@ func buildImage(project string, tag string, outfile string) error {
 
 	// remotecontext.MakeGitRepo(gitURL) clones and tars
 	// say file://./my-repo.git#branch but I need unstaged changes too
-	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{})
+	buildContext, err := archive.TarWithOptions(".", &archive.TarOptions{
+		ExcludePatterns: []string{"run-remote"},
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -3062,6 +3071,11 @@ func buildFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
+		},
+		&cli.BoolFlag{
+			Name:    "bespoke",
+			Aliases: []string{"b"},
+			Usage:   "Do not create post Dockerfile.gat",
 		},
 	}
 }
