@@ -2721,7 +2721,7 @@ func CreateCommand() *cli.Command {
 							panic(err)
 						} else if err := ensureContext(c); err != nil {
 							panic(err)
-						} else {
+						} else if branchName := c.Args().Get(0); branchName == "" || branchName == MasterWorktree {
 							return nil
 						}
 					} else {
