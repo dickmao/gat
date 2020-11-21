@@ -18,7 +18,7 @@
                 "owners": [ "591542846629" ],
                 "most_recent": true
             },
-            "instance_type": "t2.micro",
+            "instance_type": "t2.medium",
             "ssh_username": "ec2-user",
             "ami_description": "packer gat",
             "ami_name": "packer-gat {{timestamp}}",

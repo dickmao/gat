@@ -1165,7 +1165,14 @@ func runRemoteAws(c *cli.Context) error {
 	infile := inputDockerfile(c)
 	if err := c.App.Run(
 		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
-		panic(err)
+		if strings.HasPrefix(err.Error(), "dial tcp") {
+			if err := c.App.Run(
+				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+				panic(err)
+			}
+		} else {
+			panic(err)
+		}
 	}
 	config1, err := repo1.Config()
 	if err != nil {
