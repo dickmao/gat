@@ -22,6 +22,8 @@
             "ssh_username": "ec2-user",
             "ami_description": "packer gat",
             "ami_name": "packer-gat {{timestamp}}",
+            "force_delete_snapshot": true,
+            "force_deregister": true,
             "ami_groups": [
                 "all"
             ],
