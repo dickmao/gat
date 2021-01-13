@@ -10,7 +10,13 @@ GPUs
 Establish a baseline
 ====================
 
-Assume a training task under git.  Create a `Dockerfile <https://docs.docker.com/get-started/part2/#sample-dockerfile>`_, e.g.,
+Make your project known to gat.
+
+.. code-block:: shell-session
+
+   gat init
+
+Create a `Dockerfile <https://docs.docker.com/get-started/part2/#sample-dockerfile>`_, e.g.,
 ::
 
    FROM tensorflow/tensorflow
