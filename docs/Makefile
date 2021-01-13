@@ -1,3 +1,5 @@
+include ../Makefile
+
 # Minimal makefile for Sphinx documentation
 #
 
@@ -15,7 +17,7 @@ help: $(SOURCEDIR)/conf.py
 
 $(SOURCEDIR)/conf.py.in: ;
 
-$(SOURCEDIR)/conf.py: $(SOURCEDIR)/conf.py.in ../Makefile
+$(SOURCEDIR)/conf.py: $(SOURCEDIR)/conf.py.in
 	envsubst < $@.in > $@
 
 .PHONY: help Makefile
