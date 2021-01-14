@@ -14,7 +14,7 @@ Make your project known to gat.
 
 .. code-block:: shell-session
 
-   gat init
+   gat create
 
 Create a `Dockerfile <https://docs.docker.com/get-started/part2/#sample-dockerfile>`_, e.g.,
 ::
