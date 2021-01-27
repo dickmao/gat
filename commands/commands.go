@@ -1364,7 +1364,8 @@ func logAws(c *cli.Context) error {
 	region := c.String("region")
 	svc := cloudwatchlogs.New(getAwsSession(region))
 	tag := constructTag(c)
-	after := time.Unix(c.Int64("after"), 0)
+	oafter := time.Unix(c.Int64("after"), 0)
+	after := oafter
 	var term bool
 	var lastInsertId string
 	for qFirst := true; ; qFirst = false {
@@ -1392,6 +1393,9 @@ func logAws(c *cli.Context) error {
 			// `after` would miss entries in last
 			// five seconds.
 			after = time.Now().Add(-time.Minute)
+			if after.Before(oafter) {
+				after = oafter
+			}
 			time.Sleep(1200 * time.Millisecond)
 		} else {
 			break
