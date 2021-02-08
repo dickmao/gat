@@ -62,6 +62,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/pelletier/go-toml"
 	"github.com/spf13/viper"
 
 	godigest "github.com/opencontainers/go-digest"
@@ -164,6 +165,20 @@ func (ctx *wrapper) Value(key interface{}) interface{} {
 	default:
 		return ctx.Context.Value(key)
 	}
+}
+
+func vendor(c *cli.Context) string {
+	vendor := c.String("vendor")
+	if len(vendor) == 0 {
+		if viper.IsSet("vendor") {
+			vendor = viper.GetString("vendor")
+		} else if isAwsRegion(c.String("region")) {
+			vendor = "aws"
+		} else {
+			vendor = "gce"
+		}
+	}
+	return vendor
 }
 
 func gatId(c *cli.Context, prefix string) string {
@@ -1074,6 +1089,28 @@ func ensureInstanceProfile() (*iam.InstanceProfile, error) {
 	return instanceProfile, nil
 }
 
+func validateConfig(prefix string, allowed []string) {
+	if sub_viper := viper.Sub(prefix); sub_viper != nil {
+		rewrite := false
+		m := sub_viper.AllSettings()
+		for k, v := range m {
+			delete(m, k)
+			for _, K := range allowed {
+				if k == K {
+					m[k] = v
+				}
+			}
+			if _, ok := m[k]; !ok {
+				rewrite = true
+			}
+		}
+		viper.Set(prefix, m)
+		if rewrite {
+			viper.WriteConfig()
+		}
+	}
+}
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "test",
@@ -1082,26 +1119,49 @@ func TestCommand() *cli.Command {
 			if err := ensureContext(c); err != nil {
 				panic(err)
 			}
-			region := c.String("region")
-			svc := getAwsEC2(region)
-			result, _ := svc.DescribeVpcs(
-				&ec2.DescribeVpcsInput{
-					Filters: []*ec2.Filter{
-						&ec2.Filter{
-							Name: aws.String("isDefault"),
-							Values: []*string{
-								aws.String("true"),
-							},
-						},
-					},
-				},
-			)
-			fmt.Println(*result.Vpcs[0].VpcId)
-			sgid, err := ensureJupyterSecurityGroup(c)
-			if err != nil {
-				panic(err)
+
+			keyname := "dick"
+
+			top_keys := []string{"vendor"}
+			if m := viper.AllSettings(); m != nil {
+				rewrite := false
+				for k, v := range m {
+					if path := strings.Split(k, "."); len(path) == 1 {
+						delete(m, k)
+						for _, K := range top_keys {
+							if k == K {
+								m[k] = v
+							}
+						}
+						if _, ok := m[k]; !ok {
+							rewrite = true
+						}
+					}
+				}
+				if rewrite {
+					if t, err := toml.TreeFromMap(m); err != nil {
+						panic(err)
+					} else if err = viper.ReadConfig(strings.NewReader(t.String())); err != nil {
+						panic(err)
+					} else {
+						viper.WriteConfig()
+					}
+				}
 			}
-			fmt.Println(*sgid)
+			validateConfig("aws", []string{"keyname"})
+			validateConfig("gce", []string{})
+
+			if len(keyname) == 0 {
+				if viper.IsSet("aws.keyname") {
+					keyname = viper.GetString("aws.keyname")
+				} else {
+					panic(fmt.Sprintf("Requires keyname in --keyname or config."))
+				}
+			}
+			if !viper.IsSet("aws.keyname") {
+				viper.Set("aws.keyname", keyname)
+				viper.WriteConfig()
+			}
 			return nil
 		},
 	}
@@ -1120,7 +1180,36 @@ func RunRemoteCommand() *cli.Command {
 			if err := ensureContext(c); err != nil {
 				panic(err)
 			}
-			if isAwsRegion(c.String("region")) {
+
+			top_keys := []string{"vendor"}
+			if m := viper.AllSettings(); m != nil {
+				rewrite := false
+				for k, v := range m {
+					if path := strings.Split(k, "."); len(path) == 1 {
+						delete(m, k)
+						for _, K := range top_keys {
+							if k == K {
+								m[k] = v
+							}
+						}
+						if _, ok := m[k]; !ok {
+							rewrite = true
+						}
+					}
+				}
+				if rewrite {
+					if t, err := toml.TreeFromMap(m); err != nil {
+						panic(err)
+					} else if err = viper.ReadConfig(strings.NewReader(t.String())); err != nil {
+						panic(err)
+					} else {
+						viper.WriteConfig()
+					}
+				}
+			}
+			validateConfig("aws", []string{"keyname"})
+			validateConfig("gce", []string{})
+			if vendor(c) == "aws" {
 				return runRemoteAws(c)
 			}
 			return runRemoteGce(c)
@@ -1150,24 +1239,29 @@ func runRemoteAws(c *cli.Context) error {
 	zone := c.String("zone")
 	region := c.String("region")
 	keyname := c.String("keyname")
-	if len(keyname) <= 0 {
-		if viper.IsSet("keyname") {
-			keyname = viper.GetString("keyname")
+	bespoke := c.Bool("bespoke")
+	if len(keyname) == 0 {
+		if viper.IsSet("aws.keyname") {
+			keyname = viper.GetString("aws.keyname")
 		} else {
 			panic(fmt.Sprintf("Requires keyname in --keyname or config."))
 		}
-	} else {
-		if !viper.IsSet("keyname") {
-			viper.Set("keyname", keyname)
-			viper.WriteConfig()
-		}
+	}
+	if !viper.IsSet("aws.keyname") {
+		viper.Set("aws.keyname", keyname)
+		viper.WriteConfig()
 	}
 	infile := inputDockerfile(c)
-	if err := c.App.Run(
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+
+	args := []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push"}
+	if bespoke {
+		args = append(args, "--bespoke")
+	}
+	args = append(args, "--dockerfile", infile)
+
+	if err := c.App.Run(args); err != nil {
 		if strings.HasPrefix(err.Error(), "dial tcp") {
-			if err := c.App.Run(
-				[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+			if err := c.App.Run(args); err != nil {
 				panic(err)
 			}
 		} else {
@@ -1193,16 +1287,19 @@ func runRemoteAws(c *cli.Context) error {
 	}
 
 	machine := c.String("machine")
-	var gpus string
+	qGpu := false
 	if len(machine) == 0 {
 		machine = "t2.micro"
 	} else if ok, _ := regexp.Match(`^(g|p)`, []byte(machine)); ok {
-		gpus = " --gpus all"
+		qGpu = true
 	}
 
 	envs := processEnvs(c.StringSlice("env"))
 	tag := constructTag(c)
-	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, region)), gpus, region, envs)
+	gpu_installer_env := cos_gpu_installer.Gpu_installer_env
+	run_cuda_test := cos_gpu_installer.Run_cuda_test
+	run_installer := cos_gpu_installer.Run_installer
+	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, region)), qGpu, region, envs)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
@@ -1334,6 +1431,20 @@ func runRemoteAws(c *cli.Context) error {
 	return nil
 }
 
+func VendorCommand() *cli.Command {
+	return &cli.Command{
+		Name: "vendor",
+		Action: func(c *cli.Context) error {
+			if viper.IsSet("vendor") {
+				fmt.Println(viper.GetString("vendor"))
+			} else {
+				fmt.Println("unset")
+			}
+			return nil
+		},
+	}
+}
+
 func VersionCommand() *cli.Command {
 	return &cli.Command{
 		Name: "version",
@@ -1352,7 +1463,7 @@ func LogCommand() *cli.Command {
 			if err := ensureContext(c); err != nil {
 				panic(err)
 			}
-			if isAwsRegion(c.String("region")) {
+			if vendor(c) == "aws" {
 				return logAws(c)
 			}
 			return logGce(c)
@@ -1945,9 +2056,14 @@ func pushAws(c *cli.Context) error {
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
+	bespoke := c.Bool("bespoke")
 	infile := inputDockerfile(c)
-	if err := c.App.Run(
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--bespoke", "--dockerfile", infile}); err != nil {
+	args := []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build"}
+	if bespoke {
+		args = append(args, "--bespoke")
+	}
+	args = append(args, "--dockerfile", infile)
+	if err := c.App.Run(args); err != nil {
 		return err
 	}
 
@@ -1991,9 +2107,14 @@ func pushGce(c *cli.Context) error {
 	project := c.String("project")
 	zone := c.String("zone")
 	region := c.String("region")
+	bespoke := c.Bool("bespoke")
 	infile := inputDockerfile(c)
-	if err := c.App.Run(
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build", "--dockerfile", infile}); err != nil {
+	args := []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "build"}
+	if bespoke {
+		args = append(args, "--bespoke")
+	}
+	args = append(args, "--dockerfile", infile)
+	if err := c.App.Run(args); err != nil {
 		return err
 	}
 	var oldDigest, newDigest v1.Hash
@@ -2032,7 +2153,7 @@ func PushCommand() *cli.Command {
 			if err := ensureContext(c); err != nil {
 				panic(err)
 			}
-			if isAwsRegion(c.String("region")) {
+			if vendor(c) == "aws" {
 				return pushAws(c)
 			}
 			return pushGce(c)
@@ -2048,8 +2169,13 @@ func runRemoteGce(c *cli.Context) error {
 	zone := c.String("zone")
 	region := c.String("region")
 	infile := inputDockerfile(c)
-	if err := c.App.Run(
-		[]string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push", "--dockerfile", infile}); err != nil {
+	bespoke := c.Bool("bespoke")
+	args := []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push"}
+	if bespoke {
+		args = append(args, "--bespoke")
+	}
+	args = append(args, "--dockerfile", infile)
+	if err := c.App.Run(args); err != nil {
 		panic(err)
 	}
 	config1, err := repo1.Config()
@@ -2072,7 +2198,6 @@ func runRemoteGce(c *cli.Context) error {
 	envs := processEnvs(c.StringSlice("env"))
 	bytes, newline_escaped, err := escapeCredentials(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 	tag := constructTag(c)
-	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), newline_escaped, envs)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
 		if images, err := getImages(tag); err != nil || len(images) == 0 {
@@ -2109,9 +2234,7 @@ func runRemoteGce(c *cli.Context) error {
 		})
 	}
 
-	gpu_installer_env := cos_gpu_installer.Gpu_installer_env
-	run_cuda_test := cos_gpu_installer.Run_cuda_test
-	run_installer := cos_gpu_installer.Run_installer
+	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), (gpuCount > 0), newline_escaped, envs)
 	instance := &compute.Instance{
 		Name:        gatId(c, project),
 		Description: "gat compute instance",
@@ -2150,7 +2273,7 @@ func runRemoteGce(c *cli.Context) error {
 				Type:       "PERSISTENT",
 				InitializeParams: &compute.AttachedDiskInitializeParams{
 					// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
-					SourceImage: "projects/api-project-421333809285/global/images/cos-81-12871-96-202006181203",
+					SourceImage: "projects/api-project-421333809285/global/images/cos-85-13310-102-202101301723",
 					DiskSizeGb:  diskSizeGb,
 				},
 			},
@@ -2990,6 +3113,15 @@ func sendgridFlags() []cli.Flag {
 
 func runRemoteFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{
+			Name:  "vendor",
+			Usage: "can be aws or gce",
+		},
+		&cli.BoolFlag{
+			Name:    "bespoke",
+			Aliases: []string{"b"},
+			Usage:   "Do not create post Dockerfile.gat",
+		},
 		&cli.BoolFlag{
 			Name:  "noshutdown",
 			Usage: "Do not execute shutdown.service",
@@ -3073,6 +3205,11 @@ func pushFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
+		},
+		&cli.BoolFlag{
+			Name:    "bespoke",
+			Aliases: []string{"b"},
+			Usage:   "Do not create post Dockerfile.gat",
 		},
 	}
 }

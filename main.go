@@ -44,6 +44,7 @@ func newApp() *cli.App {
 		commands.LogCommand(),
 		commands.TestCommand(),
 		commands.VersionCommand(),
+		commands.VendorCommand(),
 		commands.SendgridCommand(),
 		commands.RunRemoteCommand(),
 		commands.RunLocalCommand(),

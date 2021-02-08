@@ -193,48 +193,14 @@ users:
 - default
 
 write_files:
-- path: /etc/systemd/system/cos-gpu-installer.service
-  permissions: 0755
-  owner: root
-  content: |
-    [Unit]
-    Description=Run the GPU driver installer container
-    After=network-online.target gcr-online.target
-
-    [Service]
-    User=root
-    Type=oneshot
-    RemainAfterExit=true
-    # The default stateful path to store user provided installer script and
-    # provided environment variables.
-    Environment=STATEFUL_PATH=/var/lib/nvidia
-    ExecStartPre=/bin/mkdir -p ${STATEFUL_PATH}
-    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-installer-script > /tmp/run_installer.sh && cp -f /tmp/run_installer.sh ${STATEFUL_PATH}/run_installer.sh || true"
-    ExecStart=/bin/bash ${STATEFUL_PATH}/run_installer.sh
-
-- path: /etc/systemd/system/cuda-vector-add.service
-  permissions: 0755
-  owner: root
-  content: |
-    [Unit]
-    Description=Run a CUDA Vector Addition Workload
-    Requires=cos-gpu-installer.service
-    After=cos-gpu-installer.service
-
-    [Service]
-    User=root
-    Type=oneshot
-    RemainAfterExit=true
-    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-cuda-test-script > /tmp/run_cuda_test.sh"
-    ExecStart=/bin/bash /tmp/run_cuda_test.sh
-
 - path: /etc/systemd/system/gat0.service
   permissions: 0644
   owner: root
   content: |
     [Unit]
     Description=Write service account json
-    After=cos-gpu-installer.service
+    Wants=gcr-online.target docker.socket
+    After=gcr-online.target network-online.target docker.socket
 
     [Service]
     Environment="HOME={{ .Workdir }}"
@@ -259,6 +225,19 @@ write_files:
     WorkingDirectory={{ .Workdir }}
     Type=oneshot
 {{ range .Gat1 }}{{ . | printf "    ExecStart=%s\n" }}{{ end }}
+
+- path: /etc/systemd/system/gat1a.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Halt in-docker notebook server
+
+    [Service]
+    Environment="HOME={{ .Workdir }}"
+    WorkingDirectory={{ .Workdir }}
+    Type=oneshot
+    ExecStart=/bin/bash -c "docker exec gat-run-container start.sh pkill jupyter"
 
 - path: /etc/systemd/system/gat2.service
   permissions: 0644
@@ -321,7 +300,7 @@ func DockerCommands(c *cli.Context, tag string, bucket string, envs []string) st
 	return commands
 }
 
-func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, gpus string, region string, envs []string) string {
+func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string, qGpu bool, region string, envs []string) string {
 	runcmd := []string{"daemon-reload", "start vector.service", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
@@ -330,6 +309,10 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 	userdata += "runcmd:\n"
 	for _, value := range runcmd {
 		userdata += fmt.Sprintf("- systemctl %s\n", value)
+	}
+	var gpus string
+	if qGpu {
+		gpus = " --gpus all"
 	}
 	// double evaluation: could not get template {{block}} {{end}} to work.
 	for i := 0; i < 2; i++ {
@@ -361,7 +344,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 	return b64.StdEncoding.EncodeToString([]byte(userdata))
 }
 
-func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, serviceAccountJsonContent string, envs []string) string {
+func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, qGpu bool, serviceAccountJsonContent string, envs []string) string {
 	runcmd := []string{"daemon-reload", "start cos-gpu-installer.service", "start cuda-vector-add.service", "start stackdriver-logging", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
@@ -370,6 +353,10 @@ func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string
 	userdata += "runcmd:\n"
 	for _, value := range runcmd {
 		userdata += fmt.Sprintf("- systemctl %s\n", value)
+	}
+	var gpus string
+	if qGpu {
+		gpus = " --gpus all"
 	}
 	// double evaluation: could not get template {{block}} {{end}} to work.
 	for i := 0; i < 2; i++ {
@@ -384,6 +371,7 @@ func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string
 			Envs:                      envs,
 			User:                      c.String("user"),
 			Workdir:                   "/var/tmp",
+			Gpus:                      gpus,
 			Gat0:                      gat0,
 			Gat1:                      gat1,
 			Gat2:                      gat2,

@@ -8,6 +8,7 @@ _gat_completions()
     TREES2="$(for f in $(ls -d ../worktrees/* 2>/dev/null ) ; do basename $f ; done ;)"
     OPTS="master
           version
+          vendor
           create
           list
           build
@@ -38,8 +39,21 @@ function gat() {
   local project
   local zone
   local region
+  local toml
+  local vendor
+
+  toml="${XDG_CONFIG_HOME:-$HOME}/.config/gat/config.toml"
+  if [ ! -r "$toml" ]; then
+      mkdir -p $(dirname $toml)
+      if which aws >/dev/null ; then
+          printf "vendor = \"aws\"\n" > $toml
+      elif which gcloud >/dev/null ; then
+          printf "vendor = \"gce\"\n" > $toml
+      fi
+  fi
+  vendor=$(egrep "^ *vendor *=" $toml | awk '{ print $3 }' | sed "s/\"//g")
   args=()
-  commands=("master" "version" "create" "test" "log" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
+  commands=("master" "version" "vendor" "create" "test" "log" "edit" "list" "build" "run-remote" "run-local" "push" "help" "registry" "dockerfile" "sendgrid")
   while [[ $# -gt -0 ]] ; do
       key=$1
       case "$key" in
@@ -64,17 +78,16 @@ function gat() {
 	      ;;
       esac
   done
-  zone="-"
-  project="-"
-  region=${region:-$(gcloud config get-value compute/region 2>/dev/null || true)}
-  if [ ! -z $region ] && [[ ! $region =~ -[0-9]$ ]]; then
-      # gce
+  if [ ${vendor:-} = "aws" ]; then
+      region=$(aws configure get region 2>/dev/null)
+      zone="-"
+      project="-"
+  elif [ ${vendor:-} = "gce" ]; then
+      region=${region:-$(gcloud config get-value compute/region 2>/dev/null || true)}
       zone=${zone:-$(gcloud config get-value compute/zone || true)}
       if [ -z $zone ]; then return -1; fi
       project=${project:-$(gcloud config get-value core/project || true)}
       if [ -z $project ]; then return -1; fi
-  elif [ -z $region ]; then
-      region=$(aws configure get region 2>/dev/null);
   fi
   if [ -z $region ]; then return -1; fi
   cmd=""
