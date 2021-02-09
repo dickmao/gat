@@ -56,17 +56,6 @@ var (
 	}
 )
 
-// import "os"
-// import "text/template"
-// type localConfig struct {
-//     Gat0[] string
-//     Gat1[] string
-//     Redouble string
-// }
-// t, _ := template.New("gomacro").Parse(`{{range .Gat1}}{{block "inner" .}}{{.}}{{end}}{{template "inner" .}}{{end}}`)
-// t, _ := template.New("gomacro").Parse(`{{range .Gat1}}{{with .}}{{. | printf "%s\n" }}{{end}}{{ $.Redouble | printf "%s\n" }}{{end}}`)
-// _ = t.Execute(os.Stdout, localConfig{ []string{"foo", "bar"}, []string{"baz {{ $.Redouble }}", "qux"}, "doubled" })
-
 const templAws string = `#cloud-config
 users:
 - default
@@ -193,6 +182,46 @@ users:
 - default
 
 write_files:
+- path: /etc/systemd/system/cos-gpu-installer.service
+  permissions: 0755
+  owner: root
+  content: |
+    [Unit]
+    Description=Run the GPU driver installer container
+    Requires=network-online.target gcr-online.target
+    After=network-online.target gcr-online.target
+
+    [Service]
+    User=root
+    Type=oneshot
+    RemainAfterExit=true
+    # The default stateful path to store user provided installer script and
+    # provided environment variables.
+    Environment=STATEFUL_PATH=/var/lib/nvidia
+    ExecStartPre=/bin/mkdir -p ${STATEFUL_PATH}
+    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-installer-script > /tmp/run_installer.sh && cp -f /tmp/run_installer.sh ${STATEFUL_PATH}/run_installer.sh || true"
+    ExecStart=/bin/bash ${STATEFUL_PATH}/run_installer.sh
+    StandardOutput=journal+console
+    StandardError=journal+console
+
+- path: /etc/systemd/system/cuda-vector-add.service
+  permissions: 0755
+  owner: root
+  content: |
+    [Unit]
+    Description=Run a CUDA Vector Addition Workload
+    Requires=cos-gpu-installer.service
+    After=cos-gpu-installer.service
+
+    [Service]
+    User=root
+    Type=oneshot
+    RemainAfterExit=true
+    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-cuda-test-script > /tmp/run_cuda_test.sh"
+    ExecStart=/bin/bash /tmp/run_cuda_test.sh
+    StandardOutput=journal+console
+    StandardError=journal+console
+
 - path: /etc/systemd/system/gat0.service
   permissions: 0644
   owner: root
@@ -345,7 +374,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 }
 
 func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, qGpu bool, serviceAccountJsonContent string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start cos-gpu-installer.service", "start cuda-vector-add.service", "start stackdriver-logging", "start gat0.service", "start gat1.service", "start gat2.service"}
+	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start cos-gpu-installer.service", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}

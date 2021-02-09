@@ -1296,9 +1296,6 @@ func runRemoteAws(c *cli.Context) error {
 
 	envs := processEnvs(c.StringSlice("env"))
 	tag := constructTag(c)
-	gpu_installer_env := cos_gpu_installer.Gpu_installer_env
-	run_cuda_test := cos_gpu_installer.Run_cuda_test
-	run_installer := cos_gpu_installer.Run_installer
 	user_data := UserDataAws(c, tag, repositoryUriAws(c), fmt.Sprintf("s3://%s", getBucketNameAws(c, region)), qGpu, region, envs)
 	diskSizeGb := c.Int64("disksizegb")
 	if diskSizeGb <= 0 {
@@ -1565,12 +1562,16 @@ func logGce(c *cli.Context) error {
 		}).Pages(context.Background(), printLogGce(qFirst, &term, &lastInsertId)); err != nil {
 			panic(err)
 		}
-		if !term && c.Bool("follow") {
+		if !term && (c.Bool("follow") || len(c.String("until")) != 0 || len(c.String("nextunit")) != 0) {
 			// delay between log entry and fluentd's
 			// recording is ~5s so only looking after
 			// `after` would miss entries in last
 			// five seconds.
 			after = time.Now().Add(-time.Minute)
+			oafter := time.Unix(c.Int64("after"), 0)
+			if after.Before(oafter) {
+				after = oafter
+			}
 			time.Sleep(1200 * time.Millisecond)
 		} else {
 			break
@@ -2235,6 +2236,9 @@ func runRemoteGce(c *cli.Context) error {
 	}
 
 	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), (gpuCount > 0), newline_escaped, envs)
+	gpu_installer_env := cos_gpu_installer.Gpu_installer_env
+	run_cuda_test := cos_gpu_installer.Run_cuda_test
+	run_installer := cos_gpu_installer.Run_installer
 	instance := &compute.Instance{
 		Name:        gatId(c, project),
 		Description: "gat compute instance",
@@ -2264,7 +2268,8 @@ func runRemoteGce(c *cli.Context) error {
 			},
 		},
 		Scheduling: &compute.Scheduling{
-			Preemptible: true,
+			Preemptible:       true,
+			OnHostMaintenance: "TERMINATE",
 		},
 		Disks: []*compute.AttachedDisk{
 			{
@@ -2273,7 +2278,7 @@ func runRemoteGce(c *cli.Context) error {
 				Type:       "PERSISTENT",
 				InitializeParams: &compute.AttachedDiskInitializeParams{
 					// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
-					SourceImage: "projects/api-project-421333809285/global/images/cos-85-13310-102-202101301723",
+					SourceImage: "projects/api-project-421333809285/global/images/cos-85-gat-latest",
 					DiskSizeGb:  diskSizeGb,
 				},
 			},

@@ -32,6 +32,11 @@ endef
 
 export VERSIONGO
 
+.PHONY: compile
+compile: version/version.go $(LIBDIR)/$(LIBSO)
+	go generate
+	go build
+
 # https://stackoverflow.com/a/23324703/5132008
 MAKE_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
 
@@ -49,14 +54,13 @@ $(BINDIR)/s3fs: $(MAKE_DIR)s3fs-fuse
 ami: docker
 	bash packer.sh
 
+.PHONY: source-image
+ami: docker
+	bash packer.sh
+
 .PHONY: docker
 docker: Dockerfile.scipy-gpu Dockerfile.tensorflow-gpu Dockerfile.pytorch-gpu
 	bash -ex -c 'for f in $^ ; do g=$$(echo $$f | sed s/Dockerfile.//) ; docker build -t dickmao/$${g}:latest - < $$f ; docker push dickmao/$${g}:latest ; done'
-
-.PHONY: compile
-compile: version/version.go $(LIBDIR)/$(LIBSO)
-	go generate
-	go build
 
 $(LIBDIR)/$(LIBSO):
 	mkdir -p $(LIBDIR)
