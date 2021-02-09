@@ -55,7 +55,7 @@ ami: docker
 	bash packer.sh
 
 .PHONY: source-image
-ami: docker
+source-image: docker
 	bash packer.sh
 
 .PHONY: docker

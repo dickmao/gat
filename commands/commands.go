@@ -3176,6 +3176,11 @@ func runLocalFlags() []cli.Flag {
 			Name:  "debug",
 			Usage: "Show outputs of docker commands",
 		},
+		&cli.BoolFlag{
+			Name:    "bespoke",
+			Aliases: []string{"b"},
+			Usage:   "Do not create post Dockerfile.gat",
+		},
 		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
