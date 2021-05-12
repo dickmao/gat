@@ -847,6 +847,8 @@ func printLogGce(qFirst bool, term *bool, lastInsertId *string) func(r *logging.
 				if entry.InsertId == *lastInsertId {
 					newLastInsertId = *lastInsertId
 				}
+				json.Unmarshal(entry.JsonPayload, &myPayload)
+				f.WriteString(fmt.Sprintf("Skipping %s/%s/%s\n", entry.InsertId, *lastInsertId, myPayload.Message))
 				continue
 			}
 			newLastInsertId = entry.InsertId
@@ -1564,9 +1566,9 @@ func logGce(c *cli.Context) error {
 		}
 		if !term && (c.Bool("follow") || len(c.String("until")) != 0 || len(c.String("nextunit")) != 0) {
 			// delay between log entry and fluentd's
-			// recording is ~5s so only looking after
-			// `after` would miss entries in last
-			// five seconds.
+			// recording is ~5s so dial back the cutoff
+			// by a minute to catch stragglers.
+			// lastInsertId is supposed to prevent duplicates.
 			after = time.Now().Add(-time.Minute)
 			oafter := time.Unix(c.Int64("after"), 0)
 			if after.Before(oafter) {
