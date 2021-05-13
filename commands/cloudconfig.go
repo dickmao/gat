@@ -207,10 +207,7 @@ write_files:
     [Service]
     User=root
     Type=oneshot
-    RemainAfterExit=true
-    ExecStart=/bin/bash -c "/usr/bin/docker run --volume /var/lib/nvidia/lib64:/usr/local/nvidia/lib64 --device /dev/nvidia0:/dev/nvidia0 --device /dev/nvidia-uvm:/dev/nvidia-uvm --device /dev/nvidiactl:/dev/nvidiactl gcr.io/google_containers/cuda-vector-add:v0.1"
-    StandardOutput=journal+console
-    StandardError=journal+console
+    ExecStart=/bin/bash -c "/usr/bin/docker run --volume /usr/lib64:/usr/local/nvidia/lib64 --volume /opt/bin:/usr/local/nvidia/bin --device /dev/nvidia0:/dev/nvidia0 --device /dev/nvidia-uvm:/dev/nvidia-uvm --device /dev/nvidiactl:/dev/nvidiactl gcr.io/google_containers/cuda-vector-add:v0.1"
 
 - path: /etc/systemd/system/gat0.service
   permissions: 0644
@@ -218,8 +215,7 @@ write_files:
   content: |
     [Unit]
     Description=Write service account json
-    Wants=gcr-online.target docker.socket
-    After=gcr-online.target network-online.target docker.socket
+    After=network-online.target gcr-online.target docker.socket nvidia-uvm.service
 
     [Service]
     Environment="HOME={{ .Workdir }}"
@@ -364,7 +360,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 }
 
 func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, qGpu bool, serviceAccountJsonContent string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
+	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start nvidia-uvm.service", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}

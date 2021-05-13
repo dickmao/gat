@@ -792,7 +792,7 @@ func processEnvs(envs []string) []string {
 	return envs
 }
 
-func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string, nextunit string) func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
+func printLogAws(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *time.Time, until string, nextunit string) func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
 	return func(page *cloudwatchlogs.FilterLogEventsOutput, lastPage bool) bool {
 		myPayload := struct {
 			Message          string `json:"message"`
@@ -805,15 +805,16 @@ func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string, ne
 		}{}
 		f := bufio.NewWriter(os.Stdout)
 		defer f.Flush()
-		var newLastInsertId string
+		*qFirst = *qFirst && len(*lastInsertId) != 0
 		for _, event := range page.Events {
-			if !qFirst && len(newLastInsertId) == 0 && len(*lastInsertId) > 0 {
+			if *qFirst {
 				if *event.EventId == *lastInsertId {
-					newLastInsertId = *lastInsertId
+					*qFirst = false
 				}
 				continue
 			}
-			newLastInsertId = *event.EventId
+			*lastInsertId = *event.EventId
+			*lastTimestamp = time.Unix(*event.IngestionTime/1000, *event.IngestionTime%1000*1000000)
 			if err := json.Unmarshal([]byte(*event.Message), &myPayload); err != nil {
 				panic(err)
 			}
@@ -825,18 +826,18 @@ func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string, ne
 			}
 			f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
 		}
-		*lastInsertId = newLastInsertId
 		return lastPage
 	}
 }
 
-func printLogGce(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *time.Time) func(r *logging.ListLogEntriesResponse) error {
+func printLogGce(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *time.Time, until string, nextunit string) func(r *logging.ListLogEntriesResponse) error {
 	return func(r *logging.ListLogEntriesResponse) error {
 		myPayload := struct {
 			Message          string `json:"MESSAGE"`
 			Priority         string `json:"PRIORITY"`
 			SyslogFacility   string `json:"SYSLOG_FACILITY"`
 			SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
+			SystemdUnit      string `json:"_SYSTEMD_UNIT"`
 		}{}
 		f := bufio.NewWriter(os.Stdout)
 		defer f.Flush()
@@ -857,8 +858,11 @@ func printLogGce(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *
 			if err := json.Unmarshal(entry.JsonPayload, &myPayload); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 			} else {
-				if !*term {
-					*term = strings.HasPrefix(myPayload.Message, "gat2.service: Consumed")
+				if !*term && len(until) > 0 {
+					*term = strings.Contains(myPayload.Message, until)
+				}
+				if !*term && len(nextunit) > 0 {
+					*term = myPayload.SystemdUnit == nextunit
 				}
 				f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
 			}
@@ -1476,19 +1480,19 @@ func logAws(c *cli.Context) error {
 	region := c.String("region")
 	svc := cloudwatchlogs.New(getAwsSession(region))
 	tag := constructTag(c)
-	oafter := time.Unix(c.Int64("after"), 0)
-	after := oafter
-	var term bool
+	after := time.Unix(c.Int64("after"), 0)
+	var term = (!c.Bool("follow") && len(c.String("until")) == 0 && len(c.String("nextunit")) == 0)
 	var lastInsertId string
-	for qFirst := true; ; qFirst = false {
+	for {
 		// I would use GetLogEventsPages with StartFromHead=true, but
 		// OutputLogEvent does not have an EventId member
+		qFirst := true
 		if err := svc.FilterLogEventsPages(
 			&cloudwatchlogs.FilterLogEventsInput{
 				LogGroupName: aws.String(strings.ReplaceAll(tag, `:`, `-`)),
 				StartTime:    aws.Int64(after.UnixNano() / int64(time.Millisecond)),
 			},
-			printLogAws(qFirst, &term, &lastInsertId, c.String("until"), c.String("nextunit"))); err != nil {
+			printLogAws(&qFirst, &term, &lastInsertId, &after, c.String("until"), c.String("nextunit"))); err != nil {
 			if aerr, ok := err.(awserr.Error); ok {
 				switch aerr.Code() {
 				case cloudwatch.ErrCodeResourceNotFoundException:
@@ -1499,15 +1503,7 @@ func logAws(c *cli.Context) error {
 				return err
 			}
 		}
-		if !term && (c.Bool("follow") || len(c.String("until")) != 0 || len(c.String("nextunit")) != 0) {
-			// delay between log entry and fluentd's
-			// recording is ~5s so only looking after
-			// `after` would miss entries in last
-			// five seconds.
-			after = time.Now().Add(-time.Minute)
-			if after.Before(oafter) {
-				after = oafter
-			}
+		if !term {
 			time.Sleep(1200 * time.Millisecond)
 		} else {
 			break
@@ -1551,16 +1547,12 @@ func logGce(c *cli.Context) error {
 		if err := logging.NewEntriesService(loggingService).List(&logging.ListLogEntriesRequest{
 			Filter:        strings.Join(append(filter, fmt.Sprintf("timestamp >= \"%s\"", after.Format(time.RFC3339))), " AND "),
 			ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-		}).Pages(context.Background(), printLogGce(&qFirst, &term, &lastInsertId, &after)); err != nil {
+		}).Pages(context.Background(), printLogGce(&qFirst, &term, &lastInsertId, &after, c.String("until"), c.String("nextunit"))); err != nil {
 			fmt.Println("Waiting... ", err)
 			time.Sleep(1200 * time.Millisecond)
 			continue
 		}
 		if !term {
-			// delay between log entry and fluentd's
-			// recording is ~5s so dial back the cutoff
-			// by a minute to catch stragglers.
-			// lastInsertId is supposed to prevent duplicates.
 			time.Sleep(1200 * time.Millisecond)
 		} else {
 			break
