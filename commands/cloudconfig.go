@@ -182,27 +182,19 @@ users:
 - default
 
 write_files:
-- path: /etc/systemd/system/cos-gpu-installer.service
+- path: /etc/systemd/system/nvidia-uvm.service
   permissions: 0755
   owner: root
   content: |
     [Unit]
-    Description=Run the GPU driver installer container
+    Description=Pick up /dev/nvidia-uvm
     Requires=network-online.target gcr-online.target
     After=network-online.target gcr-online.target
 
     [Service]
     User=root
     Type=oneshot
-    RemainAfterExit=true
-    # The default stateful path to store user provided installer script and
-    # provided environment variables.
-    Environment=STATEFUL_PATH=/var/lib/nvidia
-    ExecStartPre=/bin/mkdir -p ${STATEFUL_PATH}
-    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-installer-script > /tmp/run_installer.sh && cp -f /tmp/run_installer.sh ${STATEFUL_PATH}/run_installer.sh || true"
-    ExecStart=/bin/bash ${STATEFUL_PATH}/run_installer.sh
-    StandardOutput=journal+console
-    StandardError=journal+console
+    ExecStart=/sbin/modprobe -a nvidia-uvm
 
 - path: /etc/systemd/system/cuda-vector-add.service
   permissions: 0755
@@ -210,15 +202,13 @@ write_files:
   content: |
     [Unit]
     Description=Run a CUDA Vector Addition Workload
-    Requires=cos-gpu-installer.service
-    After=cos-gpu-installer.service
+    After=nvidia-uvm.service
 
     [Service]
     User=root
     Type=oneshot
     RemainAfterExit=true
-    ExecStartPre=/bin/bash -c "/usr/share/google/get_metadata_value attributes/run-cuda-test-script > /tmp/run_cuda_test.sh"
-    ExecStart=/bin/bash /tmp/run_cuda_test.sh
+    ExecStart=/bin/bash -c "/usr/bin/docker run --volume /var/lib/nvidia/lib64:/usr/local/nvidia/lib64 --device /dev/nvidia0:/dev/nvidia0 --device /dev/nvidia-uvm:/dev/nvidia-uvm --device /dev/nvidiactl:/dev/nvidiactl gcr.io/google_containers/cuda-vector-add:v0.1"
     StandardOutput=journal+console
     StandardError=journal+console
 
@@ -266,7 +256,7 @@ write_files:
     Environment="HOME={{ .Workdir }}"
     WorkingDirectory={{ .Workdir }}
     Type=oneshot
-    ExecStart=/bin/bash -c "docker exec gat-run-container start.sh pkill jupyter"
+    ExecStart=/bin/bash -c "/usr/bin/docker exec gat-run-container start.sh pkill jupyter"
 
 - path: /etc/systemd/system/gat2.service
   permissions: 0644
@@ -374,7 +364,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 }
 
 func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, qGpu bool, serviceAccountJsonContent string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start cos-gpu-installer.service", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
+	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}

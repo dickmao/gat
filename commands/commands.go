@@ -40,7 +40,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/dickmao/gat/cos_gpu_installer"
 	"github.com/dickmao/gat/version"
 	git "github.com/dickmao/git2go/v32"
 	"github.com/docker/distribution"
@@ -831,7 +830,7 @@ func printLogAws(qFirst bool, term *bool, lastInsertId *string, until string, ne
 	}
 }
 
-func printLogGce(qFirst bool, term *bool, lastInsertId *string) func(r *logging.ListLogEntriesResponse) error {
+func printLogGce(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *time.Time) func(r *logging.ListLogEntriesResponse) error {
 	return func(r *logging.ListLogEntriesResponse) error {
 		myPayload := struct {
 			Message          string `json:"MESSAGE"`
@@ -841,26 +840,29 @@ func printLogGce(qFirst bool, term *bool, lastInsertId *string) func(r *logging.
 		}{}
 		f := bufio.NewWriter(os.Stdout)
 		defer f.Flush()
-		var newLastInsertId string
+		*qFirst = *qFirst && len(*lastInsertId) != 0
 		for _, entry := range r.Entries {
-			if !qFirst && len(newLastInsertId) == 0 && len(*lastInsertId) > 0 {
+			if *qFirst {
 				if entry.InsertId == *lastInsertId {
-					newLastInsertId = *lastInsertId
+					*qFirst = false
 				}
-				json.Unmarshal(entry.JsonPayload, &myPayload)
-				f.WriteString(fmt.Sprintf("Skipping %s/%s/%s\n", entry.InsertId, *lastInsertId, myPayload.Message))
 				continue
 			}
-			newLastInsertId = entry.InsertId
+			*lastInsertId = entry.InsertId
+			if t1, err := time.Parse(time.RFC3339, entry.Timestamp); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			} else {
+				*lastTimestamp = t1
+			}
 			if err := json.Unmarshal(entry.JsonPayload, &myPayload); err != nil {
-				return err
+				fmt.Fprintln(os.Stderr, err)
+			} else {
+				if !*term {
+					*term = strings.HasPrefix(myPayload.Message, "gat2.service: Consumed")
+				}
+				f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
 			}
-			if !*term {
-				*term = strings.HasPrefix(myPayload.Message, "gat1.service: Consumed")
-			}
-			f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
 		}
-		*lastInsertId = newLastInsertId
 		return nil
 	}
 }
@@ -1541,39 +1543,24 @@ func logGce(c *cli.Context) error {
 	filter = append(filter, fmt.Sprintf("logName = \"projects/%s/logs/gat\"", project))
 	filter = append(filter, fmt.Sprintf("resource.labels.instance_id = \"%d\"", lastInstanceId))
 	filter = append(filter, fmt.Sprintf("resource.type = \"gce_instance\""))
-	freshness := c.String("freshness")
-	if len(freshness) == 0 {
-		freshness = "24h"
-	}
-	dur, err := time.ParseDuration(freshness)
-	if err != nil {
-		panic(err)
-	} else if dur > 0 {
-		dur = -dur
-	}
-	after := time.Now().Add(dur)
-	if err != nil {
-		panic(err)
-	}
-	var term bool
+	after := time.Unix(c.Int64("after"), 0)
+	var term = (!c.Bool("follow") && len(c.String("until")) == 0 && len(c.String("nextunit")) == 0)
 	var lastInsertId string
-	for qFirst := true; ; qFirst = false {
+	for {
+		qFirst := true
 		if err := logging.NewEntriesService(loggingService).List(&logging.ListLogEntriesRequest{
 			Filter:        strings.Join(append(filter, fmt.Sprintf("timestamp >= \"%s\"", after.Format(time.RFC3339))), " AND "),
 			ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-		}).Pages(context.Background(), printLogGce(qFirst, &term, &lastInsertId)); err != nil {
-			panic(err)
+		}).Pages(context.Background(), printLogGce(&qFirst, &term, &lastInsertId, &after)); err != nil {
+			fmt.Println("Waiting... ", err)
+			time.Sleep(1200 * time.Millisecond)
+			continue
 		}
-		if !term && (c.Bool("follow") || len(c.String("until")) != 0 || len(c.String("nextunit")) != 0) {
+		if !term {
 			// delay between log entry and fluentd's
 			// recording is ~5s so dial back the cutoff
 			// by a minute to catch stragglers.
 			// lastInsertId is supposed to prevent duplicates.
-			after = time.Now().Add(-time.Minute)
-			oafter := time.Unix(c.Int64("after"), 0)
-			if after.Before(oafter) {
-				after = oafter
-			}
 			time.Sleep(1200 * time.Millisecond)
 		} else {
 			break
@@ -2238,9 +2225,6 @@ func runRemoteGce(c *cli.Context) error {
 	}
 
 	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), (gpuCount > 0), newline_escaped, envs)
-	gpu_installer_env := cos_gpu_installer.Gpu_installer_env
-	run_cuda_test := cos_gpu_installer.Run_cuda_test
-	run_installer := cos_gpu_installer.Run_installer
 	instance := &compute.Instance{
 		Name:        gatId(c, project),
 		Description: "gat compute instance",
@@ -2250,18 +2234,6 @@ func runRemoteGce(c *cli.Context) error {
 				{
 					Key:   "user-data",
 					Value: &user_data,
-				},
-				{
-					Key:   "cos-gpu-installer-env",
-					Value: &gpu_installer_env,
-				},
-				{
-					Key:   "run-cuda-test-script",
-					Value: &run_cuda_test,
-				},
-				{
-					Key:   "run-installer-script",
-					Value: &run_installer,
 				},
 				{
 					Key:   "shutdown-script",
@@ -3242,10 +3214,6 @@ func buildFlags() []cli.Flag {
 
 func logFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{
-			Name:  "freshness",
-			Usage: "An expression parseable by time.ParseDuration",
-		},
 		&cli.BoolFlag{
 			Name:    "follow",
 			Aliases: []string{"f"},
