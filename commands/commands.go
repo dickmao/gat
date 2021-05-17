@@ -814,7 +814,7 @@ func printLogAws(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *
 				continue
 			}
 			*lastInsertId = *event.EventId
-			*lastTimestamp = time.Unix(*event.IngestionTime/1000, *event.IngestionTime%1000*1000000)
+			*lastTimestamp = time.Unix(*event.Timestamp/1000, *event.Timestamp%1000*1000000)
 			if err := json.Unmarshal([]byte(*event.Message), &myPayload); err != nil {
 				panic(err)
 			}
@@ -1124,10 +1124,10 @@ func TestCommand() *cli.Command {
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
+
 			if err := ensureContext(c); err != nil {
 				panic(err)
 			}
-
 			keyname := "dick"
 
 			top_keys := []string{"vendor"}
@@ -1265,7 +1265,7 @@ func runRemoteAws(c *cli.Context) error {
 	if bespoke {
 		args = append(args, "--bespoke")
 	}
-	args = append(args, "--dockerfile", infile)
+	args = append(args, "--dockerfile", infile, "--vendor", "aws")
 
 	if err := c.App.Run(args); err != nil {
 		if strings.HasPrefix(err.Error(), "dial tcp") {
@@ -1632,7 +1632,7 @@ func SendgridCommand() *cli.Command {
 					if op, err := service.Delete(func_id).Do(); err != nil {
 						panic(err)
 					} else {
-						done, errstatus := waitOp(s, op.Name, 60, 2000)
+						done, errstatus := waitFuncOp(s, op.Name, 60, 2000)
 						if !done {
 							panic("Delete() timed out")
 						} else if errstatus != nil {
@@ -1691,7 +1691,7 @@ func SendgridCommand() *cli.Command {
 				if op, err := service.Create(parent, cf).Do(); err != nil {
 					panic(err)
 				} else {
-					done, errstatus := waitOp(s, op.Name, 60, 2000)
+					done, errstatus := waitFuncOp(s, op.Name, 60, 2000)
 					if !done {
 						panic("Create() timed out")
 					} else if errstatus != nil {
@@ -2143,6 +2143,29 @@ func PushCommand() *cli.Command {
 	}
 }
 
+func waitComputeOp(c *cli.Context, op *compute.Operation) (*compute.Operation, error) {
+	project := c.String("project")
+	zone := c.String("zone")
+	opsService := compute.NewZoneOperationsService(getService())
+	var (
+		zop *compute.Operation
+		err error
+	)
+	for i, retries := 0, 12; i <= retries; i++ {
+		if i >= retries {
+			err = errors.New("Retries exceeded")
+		} else if zop, err = opsService.Get(project, zone, op.Name).Context(context.Background()).Do(); err != nil {
+			break
+		} else if zop.Status == "DONE" {
+			break
+		} else {
+			fmt.Println(op.Name, zop.Status, "...")
+			time.Sleep(10000 * time.Millisecond)
+		}
+	}
+	return zop, err
+}
+
 func runRemoteGce(c *cli.Context) error {
 	repo := c.Context.Value(repoKey).(*git.Repository)
 	repo1 := c.Context.Value(repo1Key).(*git.Repository)
@@ -2156,7 +2179,7 @@ func runRemoteGce(c *cli.Context) error {
 	if bespoke {
 		args = append(args, "--bespoke")
 	}
-	args = append(args, "--dockerfile", infile)
+	args = append(args, "--dockerfile", infile, "--vendor", "gce")
 	if err := c.App.Run(args); err != nil {
 		panic(err)
 	}
@@ -2217,6 +2240,33 @@ func runRemoteGce(c *cli.Context) error {
 	}
 
 	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), (gpuCount > 0), newline_escaped, envs)
+
+	// Ensure network.  Who deletes it?
+	network := prefix + "/global/networks/gat-network"
+	networksService := compute.NewNetworksService(getService())
+	if op, err := networksService.Insert(project, &compute.Network{
+		Name:                  "gat-network",
+		Description:           "Open default jupyter port",
+		AutoCreateSubnetworks: true,
+		RoutingConfig: &compute.NetworkRoutingConfig{
+			RoutingMode: "REGIONAL",
+		},
+	}).Context(context.Background()).Do(); err != nil {
+		panic(err)
+	} else if _, err := waitComputeOp(c, op); err != nil {
+		panic(err)
+	}
+
+	firewallsService := compute.NewFirewallsService(getService())
+	if op, err := firewallsService.Insert(project, &compute.Firewall{
+		Name:        gatId(c, project),
+		Description: "jupyter",
+		Network:     network,
+	}).Context(context.Background()).Do(); err != nil {
+		panic(err)
+	} else if _, err := waitComputeOp(c, op); err != nil {
+		panic(err)
+	}
 	instance := &compute.Instance{
 		Name:        gatId(c, project),
 		Description: "gat compute instance",
@@ -2257,7 +2307,7 @@ func runRemoteGce(c *cli.Context) error {
 						Name: "External NAT",
 					},
 				},
-				Network: prefix + "/global/networks/default",
+				Network: network,
 			},
 		},
 		ServiceAccounts: []*compute.ServiceAccount{
@@ -2275,8 +2325,13 @@ func runRemoteGce(c *cli.Context) error {
 	instancesService := compute.NewInstancesService(getService())
 	if op, err := instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
 		panic(err)
+	} else if zop, err := waitComputeOp(c, op); err != nil {
+		panic(err)
+	} else if inst, err := instancesService.Get(project, zone, strconv.FormatUint(zop.TargetId, 10)).Context(context.Background()).Do(); err != nil {
+		panic(err)
 	} else {
-		fmt.Println(op.Name)
+		fmt.Println(inst.NetworkInterfaces[0].AccessConfigs[0].NatIP,
+			inst.NetworkInterfaces[0].AccessConfigs[0].Name)
 	}
 	return nil
 }
@@ -3179,6 +3234,10 @@ func listFlags() []cli.Flag {
 func pushFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
+			Name:  "vendor",
+			Usage: "can be aws or gce",
+		},
+		&cli.StringFlag{
 			Name:  "dockerfile",
 			Usage: "Dockerfile file to build",
 		},
@@ -3206,6 +3265,10 @@ func buildFlags() []cli.Flag {
 
 func logFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{
+			Name:  "vendor",
+			Usage: "can be aws or gce",
+		},
 		&cli.BoolFlag{
 			Name:    "follow",
 			Aliases: []string{"f"},
@@ -3230,7 +3293,7 @@ func testFlags() []cli.Flag {
 	return []cli.Flag{}
 }
 
-func waitOp(s *cloudfunctions.Service, name string, sec int, ms int) (bool, *cloudfunctions.Status) {
+func waitFuncOp(s *cloudfunctions.Service, name string, sec int, ms int) (bool, *cloudfunctions.Status) {
 	// https://gist.github.com/ngauthier/d6e6f80ce977bedca601
 	timeout := time.After(time.Duration(sec) * time.Second)
 	tick := time.Tick(time.Duration(ms) * time.Millisecond)
