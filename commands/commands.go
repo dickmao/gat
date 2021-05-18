@@ -1119,56 +1119,15 @@ func validateConfig(prefix string, allowed []string) {
 	}
 }
 
+type waitComputeFunc func(string, string, string) (*compute.Operation, error)
+
 func TestCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "test",
 		Flags: testFlags(),
 		Action: func(c *cli.Context) error {
-
 			if err := ensureContext(c); err != nil {
 				panic(err)
-			}
-			keyname := "dick"
-
-			top_keys := []string{"vendor"}
-			if m := viper.AllSettings(); m != nil {
-				rewrite := false
-				for k, v := range m {
-					if path := strings.Split(k, "."); len(path) == 1 {
-						delete(m, k)
-						for _, K := range top_keys {
-							if k == K {
-								m[k] = v
-							}
-						}
-						if _, ok := m[k]; !ok {
-							rewrite = true
-						}
-					}
-				}
-				if rewrite {
-					if t, err := toml.TreeFromMap(m); err != nil {
-						panic(err)
-					} else if err = viper.ReadConfig(strings.NewReader(t.String())); err != nil {
-						panic(err)
-					} else {
-						viper.WriteConfig()
-					}
-				}
-			}
-			validateConfig("aws", []string{"keyname"})
-			validateConfig("gce", []string{})
-
-			if len(keyname) == 0 {
-				if viper.IsSet("aws.keyname") {
-					keyname = viper.GetString("aws.keyname")
-				} else {
-					panic(fmt.Sprintf("Requires keyname in --keyname or config."))
-				}
-			}
-			if !viper.IsSet("aws.keyname") {
-				viper.Set("aws.keyname", keyname)
-				viper.WriteConfig()
 			}
 			return nil
 		},
@@ -2143,10 +2102,9 @@ func PushCommand() *cli.Command {
 	}
 }
 
-func waitComputeOp(c *cli.Context, op *compute.Operation) (*compute.Operation, error) {
+func waitComputeOp(c *cli.Context, op *compute.Operation, fn waitComputeFunc) (*compute.Operation, error) {
 	project := c.String("project")
 	zone := c.String("zone")
-	opsService := compute.NewZoneOperationsService(getService())
 	var (
 		zop *compute.Operation
 		err error
@@ -2154,7 +2112,7 @@ func waitComputeOp(c *cli.Context, op *compute.Operation) (*compute.Operation, e
 	for i, retries := 0, 12; i <= retries; i++ {
 		if i >= retries {
 			err = errors.New("Retries exceeded")
-		} else if zop, err = opsService.Get(project, zone, op.Name).Context(context.Background()).Do(); err != nil {
+		} else if zop, err = fn(project, zone, op.Name); err != nil {
 			break
 		} else if zop.Status == "DONE" {
 			break
@@ -2241,36 +2199,92 @@ func runRemoteGce(c *cli.Context) error {
 
 	user_data := UserDataGce(c, tag, repositoryUriGce(c), fmt.Sprintf("gs://%s", gatId(c, project)), (gpuCount > 0), newline_escaped, envs)
 
-	// Ensure network.  Who deletes it?
 	network := prefix + "/global/networks/gat-network"
 	networksService := compute.NewNetworksService(getService())
-	if op, err := networksService.Insert(project, &compute.Network{
-		Name:                  "gat-network",
-		Description:           "Open default jupyter port",
-		AutoCreateSubnetworks: true,
-		RoutingConfig: &compute.NetworkRoutingConfig{
-			RoutingMode: "REGIONAL",
-		},
-	}).Context(context.Background()).Do(); err != nil {
+	callback := waitComputeFunc(func(project string, zone string, operation string) (*compute.Operation, error) {
+		return compute.NewGlobalOperationsService(getService()).Get(project, operation).Context(context.Background()).Do()
+	})
+	if list, err := networksService.List(project).Filter(fmt.Sprintf("name = gat-network")).Context(context.Background()).Do(); err != nil {
 		panic(err)
-	} else if _, err := waitComputeOp(c, op); err != nil {
-		panic(err)
+	} else if len(list.Items) == 0 {
+		if op, err := networksService.Insert(project, &compute.Network{
+			Name:                  "gat-network",
+			Description:           "Open default jupyter port",
+			AutoCreateSubnetworks: true,
+			RoutingConfig: &compute.NetworkRoutingConfig{
+				RoutingMode: "REGIONAL",
+			},
+		}).Context(context.Background()).Do(); err != nil {
+			panic(err)
+		} else if _, err := waitComputeOp(c, op, callback); err != nil {
+			panic(err)
+		}
 	}
 
 	firewallsService := compute.NewFirewallsService(getService())
-	if op, err := firewallsService.Insert(project, &compute.Firewall{
-		Name:        gatId(c, project),
-		Description: "jupyter",
-		Network:     network,
-	}).Context(context.Background()).Do(); err != nil {
+	if list, err := firewallsService.List(project).Filter(fmt.Sprintf("name = gat-allow-jupyter")).Context(context.Background()).Do(); err != nil {
 		panic(err)
-	} else if _, err := waitComputeOp(c, op); err != nil {
+	} else if len(list.Items) == 0 {
+		if op, err := firewallsService.Insert(project, &compute.Firewall{
+			Allowed: []*compute.FirewallAllowed{
+				&compute.FirewallAllowed{
+					IPProtocol: "tcp",
+					Ports:      []string{"8888"},
+				},
+				&compute.FirewallAllowed{
+					IPProtocol: "icmp",
+				},
+				&compute.FirewallAllowed{
+					IPProtocol: "tcp",
+					Ports:      []string{"22"},
+				},
+			},
+			Name:        "gat-allow-jupyter",
+			Description: "Allow jupyter default port",
+			Network:     network,
+			Direction:   "INGRESS",
+			TargetTags:  []string{"gat"},
+		}).Context(context.Background()).Do(); err != nil {
+			panic(err)
+		} else if _, err := waitComputeOp(c, op, callback); err != nil {
+			panic(err)
+		}
+	}
+
+	if list, err := firewallsService.List(project).Filter(fmt.Sprintf("name = gat-allow-internal")).Context(context.Background()).Do(); err != nil {
 		panic(err)
+	} else if len(list.Items) == 0 {
+		if op, err := firewallsService.Insert(project, &compute.Firewall{
+			Allowed: []*compute.FirewallAllowed{
+				&compute.FirewallAllowed{
+					IPProtocol: "tcp",
+					Ports:      []string{"0-65535"},
+				},
+				&compute.FirewallAllowed{
+					IPProtocol: "udp",
+					Ports:      []string{"0-65535"},
+				},
+				&compute.FirewallAllowed{
+					IPProtocol: "icmp",
+				},
+			},
+			Name:         "gat-allow-internal",
+			Description:  "Allow intra-network",
+			Network:      network,
+			Direction:    "INGRESS",
+			TargetTags:   []string{"gat"},
+			SourceRanges: []string{"10.128.0.0/9"},
+		}).Context(context.Background()).Do(); err != nil {
+			panic(err)
+		} else if _, err := waitComputeOp(c, op, callback); err != nil {
+			panic(err)
+		}
 	}
 	instance := &compute.Instance{
 		Name:        gatId(c, project),
 		Description: "gat compute instance",
 		MachineType: prefix + "/zones/" + zone + "/machineTypes/" + machine,
+		Tags:        &compute.Tags{Items: []string{"gat"}},
 		Metadata: &compute.Metadata{
 			Items: []*compute.MetadataItems{
 				{
@@ -2323,9 +2337,12 @@ func runRemoteGce(c *cli.Context) error {
 		GuestAccelerators: acceleratorConfigs,
 	}
 	instancesService := compute.NewInstancesService(getService())
+	callback = waitComputeFunc(func(project string, zone string, operation string) (*compute.Operation, error) {
+		return compute.NewZoneOperationsService(getService()).Get(project, zone, operation).Context(context.Background()).Do()
+	})
 	if op, err := instancesService.Insert(project, zone, instance).Context(context.Background()).Do(); err != nil {
 		panic(err)
-	} else if zop, err := waitComputeOp(c, op); err != nil {
+	} else if zop, err := waitComputeOp(c, op, callback); err != nil {
 		panic(err)
 	} else if inst, err := instancesService.Get(project, zone, strconv.FormatUint(zop.TargetId, 10)).Context(context.Background()).Do(); err != nil {
 		panic(err)

@@ -31,7 +31,7 @@ var (
 		`/bin/bash -c "docker run --entrypoint \"/bin/bash\" --name gat-sentinel-container {{ .Tag }} -c \"touch sentinel\""`,
 		`/bin/bash -c "[ -d {{ .Bucket }} ] || [ -f {{ .Workdir }}/credentials ] && docker cp {{ .Workdir }}/credentials gat-sentinel-container:$(docker inspect -f '{{"{{"}}json .Config.WorkingDir{{"}}"}}' gat-sentinel-container | sed 's/\"//g')/ || true"`,
 		`/bin/bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
-		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; function gsutil { docker run --rm --entrypoint bash gat-sentinel0 -c \"gsutil -m -o $GSUTILOPT $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-sentinel-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-sentinel-container) ; do LINE=$(gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \") ; if [ ! -z \"$LINE\" ]; then gsutil_cat {{ .Bucket }}/run-caches/$${LINE#* } | docker cp - gat-sentinel-container:$(dirname $${LINE% *}) ; fi ; done "`,
+		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=./credentials || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; function gsutil { docker run --rm --entrypoint bash gat-sentinel0 -c \"gsutil -m -o $GSUTILOPT $*\" ; } ; function ere_quote { sed 's/[][\\.|$(){}?+*^]/\\\\&/g' <<< \"$*\" ; } ; function gsutil_cat { if [ -d {{ .Bucket }} ]; then cat $1 ; else gsutil cat $1 ; fi } ; KEY=$(docker inspect --format '{{"{{"}}index .Config.Labels \"cache-key\"{{"}}"}}' gat-sentinel-container) ; for cache in $(docker inspect --format '{{"{{"}}join (split (index .Config.Labels \"cache\") \":\") \" \"{{"}}"}}' gat-sentinel-container) ; do LINE=$(gsutil_cat {{ .Bucket }}/run-caches/manifest.$KEY 2>/dev/null | grep -E -- \"^$(ere_quote $cache) \") ; if [ ! -z \"$LINE\" ]; then gsutil_cat {{ .Bucket }}/run-caches/$${LINE#* } | docker cp - gat-sentinel-container:$(dirname $${LINE% *}) ; fi ; done "`,
 		`/usr/bin/docker rmi gat-sentinel0`,
 		`/bin/bash -c "docker commit gat-sentinel-container gat-sentinel0"`,
 		`/usr/bin/docker rm gat-sentinel-container`,
@@ -51,7 +51,7 @@ var (
 		`/usr/bin/docker rm gat-cache-container`,
 	}
 	gat2 = []string{
-		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=$(realpath {{ .Workdir }}/credentials) || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; journalctl -b -o cat --no-pager -u gat1 > /var/tmp/gat1.out ; if [ -d {{ .Bucket }} ]; then mv /var/tmp/gat1.out {{ .Bucket }}/run-local/gat.$(date +%s) ; else docker run -v /var/tmp:/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT cp /hostpwd/gat1.out {{ .Bucket }}/gat.\\$(date +%%s)\" ; fi ;"`,
+		`/bin/bash -c "GSUTILOPT=$([ -f {{ .Workdir }}/credentials ] && echo Credentials:gs_service_key_file=/hostpwd/credentials || echo s3:host=s3-$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region).amazonaws.com) ; journalctl -b -o cat --no-pager -u gat1 > /var/tmp/gat1.out ; if [ -d {{ .Bucket }} ]; then mv /var/tmp/gat1.out {{ .Bucket }}/run-local/gat.$(date +%s) ; else docker run -v /var/tmp:/hostpwd --rm --entrypoint bash gat-run -c \"gsutil -m -o $GSUTILOPT cp /hostpwd/gat1.out {{ .Bucket }}/gat.\\$(date +%%s)\" ; fi ;"`,
 		`/usr/bin/docker rmi gat-run`,
 	}
 )
@@ -182,6 +182,18 @@ users:
 - default
 
 write_files:
+- path: /etc/systemd/system/config-firewall.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Configures the host firewall
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=true
+    ExecStart=/sbin/iptables -A INPUT -p tcp --dport 8888 -j ACCEPT
+
 - path: /etc/systemd/system/nvidia-uvm.service
   permissions: 0755
   owner: root
@@ -194,7 +206,7 @@ write_files:
     [Service]
     User=root
     Type=oneshot
-    ExecStart=/sbin/modprobe -a nvidia-uvm
+    ExecStart=/bin/bash -c "if [ -e /dev/nvidia0 ] ; then /sbin/modprobe -a nvidia-uvm ; fi"
 
 - path: /etc/systemd/system/cuda-vector-add.service
   permissions: 0755
@@ -202,12 +214,13 @@ write_files:
   content: |
     [Unit]
     Description=Run a CUDA Vector Addition Workload
-    After=nvidia-uvm.service
+    After=docker.service nvidia-uvm.service
+    Wants=docker.service nvidia-uvm.service
 
     [Service]
     User=root
     Type=oneshot
-    ExecStart=/bin/bash -c "/usr/bin/docker run --volume /usr/lib64:/usr/local/nvidia/lib64 --volume /opt/bin:/usr/local/nvidia/bin --device /dev/nvidia0:/dev/nvidia0 --device /dev/nvidia-uvm:/dev/nvidia-uvm --device /dev/nvidiactl:/dev/nvidiactl gcr.io/google_containers/cuda-vector-add:v0.1"
+    ExecStart=/bin/bash -c "if [ -e /dev/nvidia0 ] ; then /usr/bin/docker run --volume /usr/lib64:/usr/local/nvidia/lib64 --volume /opt/bin:/usr/local/nvidia/bin --device /dev/nvidia0:/dev/nvidia0 --device /dev/nvidia-uvm:/dev/nvidia-uvm --device /dev/nvidiactl:/dev/nvidiactl gcr.io/google_containers/cuda-vector-add:v0.1 ; fi"
 
 - path: /etc/systemd/system/gat0.service
   permissions: 0644
@@ -215,7 +228,8 @@ write_files:
   content: |
     [Unit]
     Description=Write service account json
-    After=network-online.target gcr-online.target docker.socket nvidia-uvm.service
+    After=docker.service nvidia-uvm.service config-firewall.service
+    Wants=docker.service nvidia-uvm.service config-firewall.service
 
     [Service]
     Environment="HOME={{ .Workdir }}"
@@ -360,10 +374,11 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 }
 
 func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, qGpu bool, serviceAccountJsonContent string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start nvidia-uvm.service", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
+	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start config-firewall.service", "start nvidia-uvm.service", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}
+
 	userdata := templGce
 	userdata += "runcmd:\n"
 	for _, value := range runcmd {
