@@ -838,6 +838,7 @@ func printLogGce(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *
 			SyslogFacility   string `json:"SYSLOG_FACILITY"`
 			SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
 			SystemdUnit      string `json:"_SYSTEMD_UNIT"`
+			Unit             string `json:"UNIT"`
 		}{}
 		f := bufio.NewWriter(os.Stdout)
 		defer f.Flush()
@@ -862,7 +863,8 @@ func printLogGce(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *
 					*term = strings.Contains(myPayload.Message, until)
 				}
 				if !*term && len(nextunit) > 0 {
-					*term = myPayload.SystemdUnit == nextunit
+					*term = (myPayload.SystemdUnit == nextunit ||
+						myPayload.Unit == nextunit)
 				}
 				f.WriteString(fmt.Sprintf("%s\n", myPayload.Message))
 			}
@@ -3297,7 +3299,7 @@ func logFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:  "nextunit",
-			Usage: "Follow until _SYSTEMD_UNIT assumes this value",
+			Usage: "Follow until _SYSTEMD_UNIT or UNIT assumes this value",
 		},
 		&cli.Int64Flag{
 			Name:  "after",
