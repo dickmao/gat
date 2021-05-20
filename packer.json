@@ -12,7 +12,7 @@
             "source_ami_filter": {
                 "filters": {
                     "virtualization-type": "hvm",
-                    "name": "amzn2-ami-ecs-gpu-hvm-2.0.20200928-x86_64-ebs",
+		    "name": "amzn2-ami-ecs-gpu-hvm-2.0.20210301-x86_64-ebs",
                     "root-device-type": "ebs"
                 },
                 "owners": [ "591542846629" ],
