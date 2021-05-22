@@ -2310,7 +2310,7 @@ func runRemoteGce(c *cli.Context) error {
 				Type:       "PERSISTENT",
 				InitializeParams: &compute.AttachedDiskInitializeParams{
 					// SourceImage: "projects/cos-cloud/global/images/family/cos-beta",
-					SourceImage: "projects/api-project-421333809285/global/images/cos-85-gat-latest",
+					SourceImage: "projects/api-project-421333809285/global/images/cos-85-gat-preloaded",
 					DiskSizeGb:  diskSizeGb,
 				},
 			},
