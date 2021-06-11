@@ -2173,8 +2173,10 @@ func runRemoteGce(c *cli.Context) error {
 			}
 		} else {
 			diskSizeGb = 6 + images[0].Size/units.GiB
-			if diskSizeGb < 8 {
-				diskSizeGb = 8
+			// will one day dynamically lookup size of
+			// cos-85-gat-preloaded.  Until then hardcode to 40
+			if diskSizeGb < 40 {
+				diskSizeGb = 40
 			}
 		}
 	}
