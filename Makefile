@@ -85,6 +85,13 @@ version/version.go:
 install: $(BINDIR)/s3fs compile $(XDG_CONFIG_HOME)/gat/source-gat bashrc
 	go install -v
 
+.PHONY: retag
+retag:
+	2>/dev/null git tag -d $(VERSION) || true
+	2>/dev/null git push --delete origin $(VERSION) || true
+	git tag $(VERSION)
+	git push origin $(VERSION)
+
 $(XDG_CONFIG_HOME)/gat/source-gat: source-gat
 	mkdir -p $(@D)
 	cp -p source-gat $@
