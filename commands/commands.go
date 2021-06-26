@@ -876,7 +876,9 @@ func printLogGce(qFirst *bool, term *bool, lastInsertId *string, lastTimestamp *
 func recordTargetId(lastInstanceId *uint64) func(ol *compute.OperationList) error {
 	return func(ol *compute.OperationList) error {
 		for _, op := range ol.Items {
-			*lastInstanceId = op.TargetId
+			if strings.Contains(op.TargetLink, "/instances/") {
+				*lastInstanceId = op.TargetId
+			}
 		}
 		return nil
 	}
