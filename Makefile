@@ -61,6 +61,8 @@ source-image: docker
 .PHONY: docker
 docker: Dockerfile.scipy-gpu Dockerfile.tensorflow-gpu Dockerfile.pytorch-gpu
 	bash -ex -c 'for f in $^ ; do g=$$(echo $$f | sed s/Dockerfile.//) ; docker build -t dickmao/$${g}:latest - < $$f ; docker push dickmao/$${g}:latest ; done'
+	DANGLERS=$$(docker images --quiet --filter "dangling=true") ; \
+	  if [ ! -z "$$DANGLERS" ] ; then docker rmi $$DANGLERS ; fi ;
 
 $(LIBDIR)/$(LIBSO):
 	mkdir -p $(LIBDIR)

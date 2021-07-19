@@ -1211,6 +1211,7 @@ func runRemoteAws(c *cli.Context) error {
 	region := c.String("region")
 	keyname := c.String("keyname")
 	bespoke := c.Bool("bespoke")
+	preemptible := c.Bool("spot")
 	if len(keyname) == 0 {
 		if viper.IsSet("aws.keyname") {
 			keyname = viper.GetString("aws.keyname")
@@ -1315,13 +1316,9 @@ func runRemoteAws(c *cli.Context) error {
 		if i >= retries {
 			panic("Retries exceeded")
 		}
-		reservation, err = svc.RunInstances(&ec2.RunInstancesInput{
+		input := &ec2.RunInstancesInput{
 			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
 				Arn: profile.Arn,
-			},
-			InstanceMarketOptions: &ec2.InstanceMarketOptionsRequest{
-				MarketType:  aws.String(ec2.MarketTypeSpot),
-				SpotOptions: &ec2.SpotMarketOptions{},
 			},
 			ImageId:      ami.Images[0].ImageId,
 			InstanceType: aws.String(machine),
@@ -1340,7 +1337,14 @@ func runRemoteAws(c *cli.Context) error {
 			SecurityGroupIds: []*string{
 				sgid,
 			},
-		})
+		}
+		if preemptible {
+			input.InstanceMarketOptions = &ec2.InstanceMarketOptionsRequest{
+				MarketType:  aws.String(ec2.MarketTypeSpot),
+				SpotOptions: &ec2.SpotMarketOptions{},
+			}
+		}
+		reservation, err = svc.RunInstances(input)
 		if err != nil {
 			if reqErr, ok := err.(awserr.RequestFailure); ok {
 				if reqErr.StatusCode() == 400 {
@@ -2137,6 +2141,7 @@ func runRemoteGce(c *cli.Context) error {
 	region := c.String("region")
 	infile := inputDockerfile(c)
 	bespoke := c.Bool("bespoke")
+	preemptible := c.Bool("spot")
 	args := []string{c.App.Name, "--project", project, "--zone", zone, "--region", region, "push"}
 	if bespoke {
 		args = append(args, "--bespoke")
@@ -2304,7 +2309,7 @@ func runRemoteGce(c *cli.Context) error {
 			},
 		},
 		Scheduling: &compute.Scheduling{
-			Preemptible:       true,
+			Preemptible:       preemptible,
 			OnHostMaintenance: "TERMINATE",
 		},
 		Disks: []*compute.AttachedDisk{
@@ -3194,6 +3199,10 @@ func runRemoteFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "machine",
 			Usage: "Machine type",
+		},
+		&cli.BoolFlag{
+			Name:  "spot",
+			Usage: "Preemptible?",
 		},
 		&cli.StringFlag{
 			Name:  "user",
