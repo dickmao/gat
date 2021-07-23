@@ -10,6 +10,6 @@ USER $NB_UID
 
 # Install Tensorflow
 RUN pip install --quiet --no-cache-dir \
-    'git+https://github.com/dickmao/Kaggler.git@32fa2e1bd1cba16f4f5561cdabdddcb6c16a4e63' && \
+    'git+https://github.com/dickmao/Kaggler.git@af783387d1004f9b1758ded06d320ca50702f1bb' && \
     fix-permissions "${CONDA_DIR}" && \
     fix-permissions "/home/${NB_USER}"
