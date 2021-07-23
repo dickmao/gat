@@ -79,6 +79,7 @@ $(LIBDIR)/$(LIBSO):
 	  -DCMAKE_INSTALL_PREFIX=$(LIBDIR)/.. ; \
 	  cmake --build . --target install
 
+.PHONY: version/version.go
 version/version.go:
 	@mkdir -p version
 	echo "$$VERSIONGO" > $@
