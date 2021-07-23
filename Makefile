@@ -33,7 +33,7 @@ endef
 export VERSIONGO
 
 .PHONY: compile
-compile: version/version.go $(LIBDIR)/$(LIBSO)
+compile: $(LIBDIR)/$(LIBSO)
 	go generate
 	go build
 
