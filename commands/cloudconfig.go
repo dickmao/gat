@@ -374,7 +374,7 @@ func UserDataAws(c *cli.Context, tag string, repositoryUri string, bucket string
 }
 
 func UserDataGce(c *cli.Context, tag string, repositoryUri string, bucket string, qGpu bool, serviceAccountJsonContent string, envs []string) string {
-	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start config-firewall.service", "start nvidia-uvm.service", "start cuda-vector-add.service", "start gat0.service", "start gat1.service", "start gat2.service"}
+	runcmd := []string{"daemon-reload", "start stackdriver-logging", "start config-firewall.service", "start nvidia-uvm.service", "start gat0.service", "start gat1.service", "start gat2.service"}
 	if !c.Bool("noshutdown") {
 		runcmd = append(runcmd, "start shutdown.service")
 	}
