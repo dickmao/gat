@@ -2598,7 +2598,12 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 	to_return, err := repo.Head()
 	if err != nil {
 		panic(err)
+	} else if ignored, err := repo.IsPathIgnored("run-remote"); err != nil {
+		panic(err)
+	} else if !ignored {
+		panic("run-remote is not ignored")
 	}
+
 	defer to_return.Free()
 	name, _ := config.LookupString("user.name")
 	email, _ := config.LookupString("user.email")
@@ -2611,7 +2616,11 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 	stash_oid, err = repo.Stashes.Save(
 		sig, "", git.StashDefault|git.StashKeepIndex|git.StashIncludeUntracked)
 	if err != nil && err.(*git.GitError).Code != git.ErrNotFound {
-		if err := repo.Stashes.Drop(0); err != nil {
+		if stash_oid != nil {
+			if err := repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
+		} else if err := repo.Stashes.Drop(0); err != nil {
 			fmt.Fprintf(os.Stderr, "Could not stash drop: %s\n", err)
 		}
 		panic(err)
