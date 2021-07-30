@@ -191,8 +191,6 @@ func initGat(c *cli.Context) error {
 			if nc, err := git.NewConfig(); err != nil {
 				return err
 			} else {
-				nc.SetString("user.name", "gat")
-				nc.SetString("user.email", "none")
 				config = nc
 			}
 		} else {
@@ -2607,8 +2605,13 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 	}
 
 	defer to_return.Free()
-	name, _ := config.LookupString("user.name")
-	email, _ := config.LookupString("user.email")
+	var name, email string
+	if name, err = config.LookupString("user.name"); err != nil {
+		name = "gat"
+	}
+	if email, err = config.LookupString("user.email"); err != nil {
+		email = "none"
+	}
 	sig := &git.Signature{
 		Name:  name,
 		Email: email,
