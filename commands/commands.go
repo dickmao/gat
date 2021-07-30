@@ -2620,8 +2620,6 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 			if err := repo.Stashes.Pop(0, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
 			}
-		} else if err := repo.Stashes.Drop(0); err != nil {
-			fmt.Fprintf(os.Stderr, "Could not stash drop: %s\n", err)
 		}
 		panic(err)
 	}
@@ -2802,8 +2800,6 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
 			}
-		} else if err := worktree.Repo.Stashes.Drop(0); err != nil {
-			fmt.Fprintf(os.Stderr, "Could not stash drop: %s\n", err)
 		}
 		panic(err)
 	}
