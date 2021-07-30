@@ -191,6 +191,8 @@ func initGat(c *cli.Context) error {
 			if nc, err := git.NewConfig(); err != nil {
 				return err
 			} else {
+				nc.SetString("user.name", "gat")
+				nc.SetString("user.email", "none")
 				config = nc
 			}
 		} else {
