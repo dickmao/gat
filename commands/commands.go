@@ -2606,9 +2606,16 @@ func CreateFromRepo(c *cli.Context) (string, error) {
 		Name:  name,
 		Email: email,
 		When:  time.Now()}
-	stash_oid, _ := repo.Stashes.Save(
-		sig, "", git.StashDefault|git.StashKeepIndex|git.StashIncludeUntracked)
 	opts, _ := git.DefaultStashApplyOptions()
+	var stash_oid *git.Oid
+	stash_oid, err = repo.Stashes.Save(
+		sig, "", git.StashDefault|git.StashKeepIndex|git.StashIncludeUntracked)
+	if err != nil && err.(*git.GitError).Code != git.ErrNotFound {
+		if err := repo.Stashes.Drop(0); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not stash drop: %s\n", err)
+		}
+		panic(err)
+	}
 
 	branchName := c.Args().Get(0)
 	if branchName == "" {
@@ -2767,6 +2774,9 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 	if err != nil {
 		panic(err)
 	}
+	if err = worktree.Repo.AddIgnoreRule(strings.Join([]string{".gat", "run-local", "run-remote"}, "\n")); err != nil {
+		panic(err)
+	}
 	defer to_return.Free()
 	name, _ := config.LookupString("user.name")
 	email, _ := config.LookupString("user.email")
@@ -2774,9 +2784,20 @@ func CreateFromWorktree(c *cli.Context) (string, error) {
 		Name:  name,
 		Email: email,
 		When:  time.Now()}
-	stash_oid, _ := worktree.Repo.Stashes.Save(
-		sig, "", git.StashDefault|git.StashKeepIndex|git.StashIncludeUntracked)
 	opts, _ := git.DefaultStashApplyOptions()
+	var stash_oid *git.Oid
+	stash_oid, err = worktree.Repo.Stashes.Save(
+		sig, "", git.StashDefault|git.StashKeepIndex|git.StashIncludeUntracked)
+	if err != nil && err.(*git.GitError).Code != git.ErrNotFound {
+		if stash_oid != nil {
+			if err := worktree.Repo.Stashes.Pop(0, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not stash pop: %s\n", err)
+			}
+		} else if err := worktree.Repo.Stashes.Drop(0); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not stash drop: %s\n", err)
+		}
+		panic(err)
+	}
 
 	branchName := c.Args().Get(0)
 	if branchName == "" {
