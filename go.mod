@@ -12,7 +12,7 @@ require (
 	cloud.google.com/go/logging v1.0.0
 	cloud.google.com/go/storage v1.10.0
 	github.com/Microsoft/hcsshim v0.8.9 // indirect
-	github.com/aws/aws-sdk-go v1.31.6
+	github.com/aws/aws-sdk-go v1.34.0
 	github.com/containerd/continuity v0.0.0-20200710164510-efbc4488d8fe // indirect
 	github.com/dickmao/git2go/v32 v32.0.1-0.20201110230406-ba23003dc8d8
 	github.com/docker/distribution v2.7.1+incompatible
